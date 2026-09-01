@@ -1,0 +1,12 @@
+EmployeeID,EmployeeName,Role,Department,DistributorID,JoinDate
+E01,Utkarsh Pathak,Founder & General Manager,Management,,2018-08-01
+E02,Rakesh Sharma,Operations Executive,Back Office,,2018-09-01
+E03,Sunita Verma,Accounts & Compliance Executive,Back Office,,2018-09-15
+E04,Manoj Tiwari,Procurement Executive,Back Office,,2019-01-10
+E05,Priya Deshmukh,Inventory & Dispatch Executive,Back Office,,2019-02-01
+E06,Ajay Chouhan,Market Representative,Sales,D01,2018-09-01
+E07,Deepak Malviya,Market Representative,Sales,D01,2018-10-01
+E08,Sanjay Rathore,Market Representative,Sales,D01,2019-03-01
+E09,Vikram Solanki,Market Representative,Sales,D02,2018-09-15
+E10,Anil Yadav,Market Representative,Sales,D02,2019-01-01
+E11,Ramesh Patidar,Market Representative,Sales,D02,2019-06-01

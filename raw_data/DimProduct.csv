@@ -1,0 +1,25 @@
+ProductID,ProductName,Category,UOM,LaunchDate,UnitCost,MRP,ShelfLifeMonths,PeakSeason,GrossMarginPct,SafetyStockLevel,ReorderPoint
+P001,Balaji Triphala Churna 100g,Churna,Bottle,2019-01-01,32,65,24,Monsoon,0.508,298,1014
+P002,Balaji Hingwastak Churna 100g,Churna,Bottle,2019-01-01,28,60,24,Monsoon,0.533,353,1235
+P003,Balaji Ashwagandha Churna 100g,Churna,Bottle,2019-06-01,45,95,24,Winter,0.526,267,934
+P004,Balaji Sitopaladi Churna 50g,Churna,Bottle,2019-06-01,30,70,18,Winter,0.571,272,925
+P005,Balaji Arthritis Care Vati 60tab,Vati,Bottle,2019-01-01,55,120,30,Winter,0.542,190,665
+P006,Balaji Kabj Har Vati 60tab,Vati,Bottle,2019-01-01,40,90,30,Monsoon,0.556,241,830
+P007,Balaji Immunity Vati 60tab,Vati,Bottle,2020-01-01,50,110,24,Winter,0.545,199,696
+P008,Balaji Liver Care Vati 60tab,Vati,Bottle,2020-01-01,48,105,24,Autumn,0.543,190,666
+P009,Balaji Dashmoolarishta 450ml,Arishta,Bottle,2019-01-01,60,130,24,Winter,0.538,160,572
+P010,Balaji Ashokarishta 450ml,Arishta,Bottle,2019-01-01,58,125,24,Autumn,0.536,152,544
+P011,Balaji Kumaryasava 450ml,Arishta,Bottle,2019-06-01,55,120,24,Monsoon,0.542,176,628
+P012,Balaji Khansi Syrup 200ml,Syrup,Bottle,2019-01-01,35,80,18,Winter,0.562,207,713
+P013,Balaji Digestive Tonic Syrup 200ml,Syrup,Bottle,2019-01-01,33,75,18,Monsoon,0.56,201,703
+P014,Balaji Immunity Booster Syrup 200ml,Syrup,Bottle,2021-01-01,42,95,18,Winter,0.558,200,688
+P015,Balaji Mahanarayan Tel 100ml,Tel,Bottle,2019-01-01,38,85,36,Winter,0.553,109,383
+P016,Balaji Hair Care Tel 100ml,Tel,Bottle,2019-06-01,35,80,36,Autumn,0.562,93,315
+P017,Balaji Pain Relief Tel 100ml,Tel,Bottle,2019-01-01,40,90,36,Winter,0.556,114,400
+P018,Balaji Joint Care Capsule 60cap,Capsule,Bottle,2020-06-01,60,135,30,Winter,0.556,158,554
+P019,Balaji Multivitamin Capsule 60cap,Capsule,Bottle,2020-06-01,50,115,24,Autumn,0.565,203,710
+P020,Balaji Stress Relief Capsule 60cap,Capsule,Bottle,2021-06-01,55,125,24,Autumn,0.56,167,585
+P021,Balaji Chyawanprash 500g,Classical,Jar,2019-01-01,90,190,24,Winter,0.526,242,870
+P022,Balaji Chyawanprash Sugar-Free 500g,Classical,Jar,2021-01-01,105,220,24,Winter,0.523,242,870
+P023,Balaji Amrutarishta 450ml,Classical,Bottle,2023-01-01,62,135,24,Winter,0.541,246,885
+P024,Balaji Immunity Kadha Mix 100g,Classical,Pouch,2023-06-01,40,90,18,Winter,0.556,198,693

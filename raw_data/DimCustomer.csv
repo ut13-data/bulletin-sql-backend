@@ -1,0 +1,192 @@
+CustomerID,OutletName,Area,City,OutletType,DistributorID,RepEmployeeID,OnboardDate,ClosureDate,CreditTermDays,Status
+C0001,Krishna Medical Store 1,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E06,2021-08-26,,30,Active
+C0002,Shree Pharmacy 2,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2018-07-05,,45,Active
+C0003,Krishna Medical Store 3,Rajwada,Indore,Standalone Pharmacy,D01,E08,2019-04-13,,30,Active
+C0004,Shree Medical Store 4,Musakhedi,Indore,Ayurvedic Store,D02,E09,2021-09-10,2023-04-15,30,Closed
+C0005,Maa Ayurvedic Bhandar 5,Nipania,Indore,Standalone Pharmacy,D02,E10,2018-01-23,,30,Active
+C0006,Maa Medical Store 6,Sanwer Road,Ujjain,Standalone Pharmacy,D02,E11,2019-08-24,,15,Active
+C0007,Shree Pharmacy 7,Palasia,Indore,Ayurvedic Store,D01,E06,2019-12-02,2024-04-15,30,Closed
+C0008,Maa Medicos 8,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E07,2021-10-18,,30,Active
+C0009,Om Medicos 9,MG Road,Indore,Ayurvedic Store,D01,E08,2020-12-27,,30,Active
+C0010,Maa Pharmacy 10,Ujjain Road Belt,Dewas,General Medical Store,D02,E09,2020-05-22,,45,Active
+C0011,Balaji Medicos 11,Annapurna Road,Indore,Ayurvedic Store,D02,E10,2021-07-12,,30,Active
+C0012,Ganesh Ayurvedic Bhandar 12,Ujjain Road Belt,Dewas,Standalone Pharmacy,D02,E11,2019-09-23,,30,Active
+C0013,Shivam Pharmacy 13,Palasia,Indore,Ayurvedic Store,D01,E06,2019-06-05,,15,Active
+C0014,Jai Pharmacy 14,MG Road,Indore,Ayurvedic Store,D01,E07,2021-03-13,,15,Active
+C0015,Om Medicos 15,MG Road,Indore,General Medical Store,D01,E08,2020-07-11,,45,Active
+C0016,Krishna Pharmacy 16,Sanwer Road,Dewas,Standalone Pharmacy,D02,E09,2018-06-10,2024-04-15,45,Closed
+C0017,Maa Medicos 17,Sanwer Road,Dewas,Ayurvedic Store,D02,E10,2019-06-22,,45,Active
+C0018,Maa Medical Store 18,Ujjain Road Belt,Dewas,Ayurvedic Store,D02,E11,2018-08-22,,45,Active
+C0019,Shivam Medicos 19,Vijay Nagar,Indore,Ayurvedic Store,D01,E06,2020-01-06,,15,Active
+C0020,Shree Pharmacy 20,Sarafa Bazaar,Indore,General Medical Store,D01,E07,2019-10-11,,30,Active
+C0021,Krishna Medical Store 21,Bhawarkuan,Indore,Ayurvedic Store,D01,E08,2019-06-12,,15,Active
+C0022,Shivam Medical Store 22,Annapurna Road,Dewas,Ayurvedic Store,D02,E09,2019-04-19,,45,Active
+C0023,Om Ayurvedic Bhandar 23,Sanwer Road,Ujjain,General Medical Store,D02,E10,2019-02-05,,30,Active
+C0024,Shivam Medicos 24,Dewas Naka,Indore,Standalone Pharmacy,D02,E11,2019-03-08,,15,Active
+C0025,Shree Medical Store 25,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E06,2018-12-06,,30,Active
+C0026,Jai Medicos 26,MG Road,Indore,Standalone Pharmacy,D01,E07,2021-12-18,2023-10-15,30,Closed
+C0027,Om Medical Store 27,Rajwada,Indore,General Medical Store,D01,E08,2021-11-19,,45,Active
+C0028,Krishna Ayurvedic Bhandar 28,Musakhedi,Dewas,Standalone Pharmacy,D02,E09,2021-02-11,,30,Active
+C0029,Balaji Medicos 29,Sanwer Road,Ujjain,Standalone Pharmacy,D02,E10,2018-12-13,,30,Active
+C0030,Om Ayurvedic Bhandar 30,Annapurna Road,Indore,Standalone Pharmacy,D02,E11,2019-02-16,,15,Active
+C0031,Ganesh Ayurvedic Bhandar 31,Palasia,Indore,Standalone Pharmacy,D01,E06,2019-12-18,,15,Active
+C0032,Ganesh Ayurvedic Bhandar 32,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E07,2018-08-06,2023-03-15,30,Closed
+C0033,Krishna Pharmacy 33,Rajwada,Indore,Ayurvedic Store,D01,E08,2021-07-14,,30,Active
+C0034,Shivam Medical Store 34,Musakhedi,Indore,Wellness Chain Outlet,D02,E09,2021-10-13,,30,Active
+C0035,Shivam Ayurvedic Bhandar 35,Dewas Naka,Dewas,Ayurvedic Store,D02,E10,2020-04-16,,30,Active
+C0036,Balaji Pharmacy 36,Sanwer Road,Indore,Standalone Pharmacy,D02,E11,2019-12-16,,15,Active
+C0037,Shree Pharmacy 37,Vijay Nagar,Indore,General Medical Store,D01,E06,2019-06-20,,30,Active
+C0038,Ganesh Ayurvedic Bhandar 38,Vijay Nagar,Indore,Ayurvedic Store,D01,E07,2019-05-16,,30,Active
+C0039,Balaji Medicos 39,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E08,2020-09-13,,15,Active
+C0040,Balaji Medical Store 40,Annapurna Road,Ujjain,General Medical Store,D02,E09,2019-06-23,,45,Active
+C0041,Balaji Medicos 41,Ujjain Road Belt,Ujjain,Standalone Pharmacy,D02,E10,2018-11-21,,30,Active
+C0042,Shree Ayurvedic Bhandar 42,Annapurna Road,Ujjain,Standalone Pharmacy,D02,E11,2020-04-10,,30,Active
+C0043,Krishna Medical Store 43,Rau,Indore,Ayurvedic Store,D01,E06,2019-05-09,,30,Active
+C0044,Maa Ayurvedic Bhandar 44,Rau,Indore,Standalone Pharmacy,D01,E07,2019-03-23,,30,Active
+C0045,Maa Medicos 45,MG Road,Indore,Standalone Pharmacy,D01,E08,2019-08-06,,45,Active
+C0046,Om Pharmacy 46,Dewas Naka,Indore,Standalone Pharmacy,D02,E09,2020-03-11,,30,Active
+C0047,Maa Medical Store 47,Dewas Naka,Ujjain,Standalone Pharmacy,D02,E10,2018-11-09,,15,Active
+C0048,Shree Medical Store 48,Nipania,Indore,Ayurvedic Store,D02,E11,2021-01-18,2023-08-15,30,Closed
+C0049,Shivam Ayurvedic Bhandar 49,MG Road,Indore,Ayurvedic Store,D01,E06,2018-05-18,,15,Active
+C0050,Shree Ayurvedic Bhandar 50,Vijay Nagar,Indore,Ayurvedic Store,D01,E07,2021-04-22,,30,Active
+C0051,Shree Medical Store 51,Bhawarkuan,Indore,General Medical Store,D01,E08,2021-09-12,,15,Active
+C0052,Maa Medical Store 52,Dewas Naka,Dewas,Ayurvedic Store,D02,E09,2020-11-09,,30,Active
+C0053,Jai Medical Store 53,Annapurna Road,Dewas,Ayurvedic Store,D02,E10,2018-01-24,,45,Active
+C0054,Maa Medical Store 54,Annapurna Road,Indore,Standalone Pharmacy,D02,E11,2021-01-08,,45,Active
+C0055,Ganesh Medical Store 55,Sarafa Bazaar,Indore,General Medical Store,D01,E06,2019-10-23,,30,Active
+C0056,Shivam Medicos 56,Rajwada,Indore,Ayurvedic Store,D01,E07,2018-07-01,,30,Active
+C0057,Om Ayurvedic Bhandar 57,Rau,Indore,Standalone Pharmacy,D01,E08,2020-01-17,,30,Active
+C0058,Shree Ayurvedic Bhandar 58,Nipania,Ujjain,Standalone Pharmacy,D02,E09,2020-03-09,,30,Active
+C0059,Jai Ayurvedic Bhandar 59,Dewas Naka,Indore,General Medical Store,D02,E10,2020-12-26,,15,Active
+C0060,Jai Medical Store 60,Nipania,Indore,Ayurvedic Store,D02,E11,2019-07-12,,30,Active
+C0061,Shree Medicos 61,Bhawarkuan,Indore,Ayurvedic Store,D01,E06,2019-07-21,,30,Active
+C0062,Ganesh Medicos 62,Sarafa Bazaar,Indore,Ayurvedic Store,D01,E07,2019-10-15,,45,Active
+C0063,Shivam Pharmacy 63,Rajwada,Indore,General Medical Store,D01,E08,2018-03-19,,45,Active
+C0064,Ganesh Pharmacy 64,Sanwer Road,Dewas,Ayurvedic Store,D02,E09,2020-06-27,,30,Active
+C0065,Ganesh Pharmacy 65,Annapurna Road,Ujjain,General Medical Store,D02,E10,2020-06-05,,30,Active
+C0066,Shree Medical Store 66,Dewas Naka,Indore,Standalone Pharmacy,D02,E11,2019-01-08,,30,Active
+C0067,Balaji Ayurvedic Bhandar 67,Bhawarkuan,Indore,General Medical Store,D01,E06,2020-11-15,,45,Active
+C0068,Shivam Medicos 68,MG Road,Indore,Ayurvedic Store,D01,E07,2018-06-13,,45,Active
+C0069,Jai Pharmacy 69,Rau,Indore,General Medical Store,D01,E08,2019-02-24,,30,Active
+C0070,Om Medical Store 70,Musakhedi,Ujjain,Ayurvedic Store,D02,E09,2021-04-19,,30,Active
+C0071,Ganesh Medical Store 71,Sanwer Road,Indore,Standalone Pharmacy,D02,E10,2019-06-03,,15,Active
+C0072,Shivam Pharmacy 72,Musakhedi,Indore,Standalone Pharmacy,D02,E11,2019-08-25,,30,Active
+C0073,Balaji Medicos 73,Rajwada,Indore,Standalone Pharmacy,D01,E06,2019-01-03,,45,Active
+C0074,Om Pharmacy 74,Rau,Indore,Ayurvedic Store,D01,E07,2019-06-04,,30,Active
+C0075,Om Pharmacy 75,Palasia,Indore,General Medical Store,D01,E08,2020-09-11,,30,Active
+C0076,Ganesh Pharmacy 76,Musakhedi,Dewas,Standalone Pharmacy,D02,E09,2018-08-24,,30,Active
+C0077,Balaji Ayurvedic Bhandar 77,Sanwer Road,Indore,General Medical Store,D02,E10,2020-06-08,,15,Active
+C0078,Maa Pharmacy 78,Ujjain Road Belt,Indore,Ayurvedic Store,D02,E11,2021-11-20,,30,Active
+C0079,Maa Medicos 79,Vijay Nagar,Indore,Ayurvedic Store,D01,E06,2019-09-02,,30,Active
+C0080,Shivam Medicos 80,Rau,Indore,General Medical Store,D01,E07,2020-11-10,,45,Active
+C0081,Jai Medicos 81,Vijay Nagar,Indore,Standalone Pharmacy,D01,E08,2021-03-10,,15,Active
+C0082,Jai Pharmacy 82,Nipania,Ujjain,General Medical Store,D02,E09,2019-12-07,,30,Active
+C0083,Shivam Ayurvedic Bhandar 83,Annapurna Road,Dewas,Standalone Pharmacy,D02,E10,2020-02-08,,30,Active
+C0084,Maa Ayurvedic Bhandar 84,Sanwer Road,Ujjain,Standalone Pharmacy,D02,E11,2018-09-18,,30,Active
+C0085,Shree Pharmacy 85,Rajwada,Indore,Standalone Pharmacy,D01,E06,2019-04-19,,30,Active
+C0086,Jai Medical Store 86,Sarafa Bazaar,Indore,Ayurvedic Store,D01,E07,2019-12-19,,30,Active
+C0087,Om Medical Store 87,Vijay Nagar,Indore,Standalone Pharmacy,D01,E08,2019-12-26,,30,Active
+C0088,Shree Medicos 88,Annapurna Road,Ujjain,Ayurvedic Store,D02,E09,2019-12-20,,30,Active
+C0089,Om Ayurvedic Bhandar 89,Nipania,Indore,Standalone Pharmacy,D02,E10,2021-10-24,,45,Active
+C0090,Ganesh Medical Store 90,Sanwer Road,Ujjain,Ayurvedic Store,D02,E11,2021-02-27,2024-08-15,15,Closed
+C0091,Om Medicos 91,Rau,Indore,Ayurvedic Store,D01,E06,2020-06-23,,15,Active
+C0092,Maa Medical Store 92,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2018-01-02,,15,Active
+C0093,Krishna Ayurvedic Bhandar 93,Rajwada,Indore,Standalone Pharmacy,D01,E08,2020-02-16,,30,Active
+C0094,Shivam Pharmacy 94,Sanwer Road,Ujjain,Ayurvedic Store,D02,E09,2021-11-10,,30,Active
+C0095,Ganesh Medicos 95,Dewas Naka,Indore,Ayurvedic Store,D02,E10,2019-08-01,,45,Active
+C0096,Balaji Ayurvedic Bhandar 96,Ujjain Road Belt,Ujjain,Ayurvedic Store,D02,E11,2018-09-23,,30,Active
+C0097,Om Medical Store 97,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E06,2019-05-26,,30,Active
+C0098,Maa Pharmacy 98,Bhawarkuan,Indore,Ayurvedic Store,D01,E07,2018-01-18,,30,Active
+C0099,Krishna Ayurvedic Bhandar 99,Vijay Nagar,Indore,Standalone Pharmacy,D01,E08,2019-10-26,,30,Active
+C0100,Shree Pharmacy 100,Nipania,Indore,Standalone Pharmacy,D02,E09,2021-11-26,,30,Active
+C0101,Balaji Pharmacy 101,Musakhedi,Ujjain,General Medical Store,D02,E10,2020-12-23,,15,Active
+C0102,Ganesh Medicos 102,Ujjain Road Belt,Dewas,Ayurvedic Store,D02,E11,2019-11-03,,45,Active
+C0103,Shivam Ayurvedic Bhandar 103,Bhawarkuan,Indore,Ayurvedic Store,D01,E06,2020-08-11,,15,Active
+C0104,Maa Medical Store 104,Rajwada,Indore,Ayurvedic Store,D01,E07,2018-11-25,2024-09-15,15,Closed
+C0105,Balaji Medicos 105,MG Road,Indore,Standalone Pharmacy,D01,E08,2019-01-13,,15,Active
+C0106,Krishna Medical Store 106,Ujjain Road Belt,Indore,Standalone Pharmacy,D02,E09,2021-05-21,,15,Active
+C0107,Ganesh Medicos 107,Dewas Naka,Indore,Standalone Pharmacy,D02,E10,2019-07-18,,45,Active
+C0108,Maa Pharmacy 108,Dewas Naka,Indore,Standalone Pharmacy,D02,E11,2018-11-14,,15,Active
+C0109,Shree Pharmacy 109,Palasia,Indore,Standalone Pharmacy,D01,E06,2021-04-18,,30,Active
+C0110,Ganesh Medicos 110,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2020-04-07,,15,Active
+C0111,Shree Medical Store 111,Vijay Nagar,Indore,Standalone Pharmacy,D01,E08,2019-09-27,,30,Active
+C0112,Jai Medical Store 112,Dewas Naka,Dewas,Ayurvedic Store,D02,E09,2018-07-26,,15,Active
+C0113,Shivam Medicos 113,Annapurna Road,Dewas,General Medical Store,D02,E10,2019-10-23,,30,Active
+C0114,Krishna Ayurvedic Bhandar 114,Sanwer Road,Dewas,Standalone Pharmacy,D02,E11,2019-01-14,,15,Active
+C0115,Ganesh Pharmacy 115,Palasia,Indore,Standalone Pharmacy,D01,E06,2018-02-08,,30,Active
+C0116,Maa Ayurvedic Bhandar 116,Bhawarkuan,Indore,General Medical Store,D01,E07,2019-07-07,,30,Active
+C0117,Shree Ayurvedic Bhandar 117,Rajwada,Indore,General Medical Store,D01,E08,2019-09-05,,15,Active
+C0118,Krishna Medical Store 118,Dewas Naka,Ujjain,Ayurvedic Store,D02,E09,2019-03-11,,30,Active
+C0119,Shree Ayurvedic Bhandar 119,Ujjain Road Belt,Dewas,Standalone Pharmacy,D02,E10,2020-04-08,2024-06-15,30,Closed
+C0120,Ganesh Medical Store 120,Musakhedi,Indore,Ayurvedic Store,D02,E11,2020-11-27,,45,Active
+C0121,Jai Pharmacy 121,Vijay Nagar,Indore,General Medical Store,D01,E06,2019-11-10,,45,Active
+C0122,Ganesh Ayurvedic Bhandar 122,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2019-08-24,,30,Active
+C0123,Balaji Medicos 123,Bhawarkuan,Indore,General Medical Store,D01,E08,2021-11-05,,30,Active
+C0124,Krishna Medicos 124,Nipania,Indore,Ayurvedic Store,D02,E09,2021-12-04,,15,Active
+C0125,Ganesh Pharmacy 125,Annapurna Road,Dewas,General Medical Store,D02,E10,2018-10-22,,30,Active
+C0126,Shivam Ayurvedic Bhandar 126,Sanwer Road,Dewas,Ayurvedic Store,D02,E11,2019-10-09,,30,Active
+C0127,Maa Ayurvedic Bhandar 127,Palasia,Indore,General Medical Store,D01,E06,2019-04-22,,15,Active
+C0128,Jai Medical Store 128,Rau,Indore,Ayurvedic Store,D01,E07,2019-01-08,,30,Active
+C0129,Shivam Pharmacy 129,Sarafa Bazaar,Indore,Wellness Chain Outlet,D01,E08,2021-12-02,,15,Active
+C0130,Jai Medical Store 130,Nipania,Dewas,Ayurvedic Store,D02,E09,2021-04-11,,15,Active
+C0131,Jai Pharmacy 131,Ujjain Road Belt,Ujjain,Standalone Pharmacy,D02,E10,2021-12-01,,30,Active
+C0132,Jai Medical Store 132,Annapurna Road,Indore,Wellness Chain Outlet,D02,E11,2020-02-03,,45,Active
+C0133,Balaji Medical Store 133,Vijay Nagar,Indore,General Medical Store,D01,E06,2019-04-09,,30,Active
+C0134,Ganesh Medicos 134,Rau,Indore,Ayurvedic Store,D01,E07,2021-03-26,,30,Active
+C0135,Maa Medical Store 135,Rajwada,Indore,Ayurvedic Store,D01,E08,2020-01-18,,45,Active
+C0136,Krishna Medical Store 136,Musakhedi,Indore,Ayurvedic Store,D02,E09,2020-02-21,,15,Active
+C0137,Shivam Pharmacy 137,Annapurna Road,Dewas,Standalone Pharmacy,D02,E10,2018-09-13,,15,Active
+C0138,Maa Medical Store 138,Musakhedi,Ujjain,Standalone Pharmacy,D02,E11,2019-06-21,,30,Active
+C0139,Balaji Medical Store 139,Bhawarkuan,Indore,Ayurvedic Store,D01,E06,2019-12-16,,30,Active
+C0140,Jai Medicos 140,Sarafa Bazaar,Indore,Standalone Pharmacy,D01,E07,2019-05-15,,30,Active
+C0141,Shree Ayurvedic Bhandar 141,Vijay Nagar,Indore,General Medical Store,D01,E08,2019-08-17,,45,Active
+C0142,Shree Medical Store 142,Musakhedi,Ujjain,Ayurvedic Store,D02,E09,2019-10-03,,15,Active
+C0143,Om Ayurvedic Bhandar 143,Annapurna Road,Dewas,Standalone Pharmacy,D02,E10,2020-09-25,,15,Active
+C0144,Shivam Medical Store 144,Dewas Naka,Ujjain,Ayurvedic Store,D02,E11,2019-03-10,,30,Active
+C0145,Ganesh Pharmacy 145,Rajwada,Indore,Ayurvedic Store,D01,E06,2020-06-25,,45,Active
+C0146,Shivam Pharmacy 146,Sarafa Bazaar,Indore,General Medical Store,D01,E07,2020-07-24,,45,Active
+C0147,Ganesh Medicos 147,Rajwada,Indore,Standalone Pharmacy,D01,E08,2019-11-05,,45,Active
+C0148,Om Pharmacy 148,Musakhedi,Indore,General Medical Store,D02,E09,2019-02-15,,30,Active
+C0149,Balaji Medical Store 149,Musakhedi,Dewas,Ayurvedic Store,D02,E10,2019-01-13,,30,Active
+C0150,Ganesh Ayurvedic Bhandar 150,Ujjain Road Belt,Dewas,Ayurvedic Store,D02,E11,2019-08-11,,15,Active
+C0151,Shivam Medical Store 151,MG Road,Indore,Ayurvedic Store,D01,E07,2022-09-22,,30,Active
+C0152,Jai Pharmacy 152,Bhawarkuan,Indore,General Medical Store,D01,E08,2022-07-01,,15,Active
+C0153,Om Ayurvedic Bhandar 153,Musakhedi,Dewas,Standalone Pharmacy,D02,E11,2022-04-09,,15,Active
+C0154,Sai Medical Store 154,Rau,Indore,Ayurvedic Store,D01,E07,2022-05-04,,15,Active
+C0155,Shivam Pharmacy 155,Ujjain Road Belt,Ujjain,Standalone Pharmacy,D02,E11,2022-05-08,,45,Active
+C0156,Balaji Ayurvedic Bhandar 156,MG Road,Indore,Standalone Pharmacy,D01,E06,2022-09-11,,30,Active
+C0157,Shivam Medical Store 157,Rajwada,Indore,Standalone Pharmacy,D01,E07,2022-09-11,,30,Active
+C0158,Ganesh Pharmacy 158,Vijay Nagar,Indore,Ayurvedic Store,D01,E08,2022-11-21,,30,Active
+C0159,Sai Medical Store 159,Vijay Nagar,Indore,Standalone Pharmacy,D01,E07,2022-05-04,,30,Active
+C0160,Om Ayurvedic Bhandar 160,Palasia,Indore,Standalone Pharmacy,D01,E08,2022-10-27,,30,Active
+C0161,Jai Ayurvedic Bhandar 161,Vijay Nagar,Indore,Ayurvedic Store,D01,E07,2022-09-26,,30,Active
+C0162,Sai Pharmacy 162,Vijay Nagar,Indore,Standalone Pharmacy,D01,E08,2022-04-01,,45,Active
+C0163,Krishna Ayurvedic Bhandar 163,Palasia,Indore,Wellness Chain Outlet,D01,E06,2023-03-11,,15,Active
+C0164,Jai Medical Store 164,Nipania,Ujjain,Standalone Pharmacy,D02,E11,2023-11-01,,15,Active
+C0165,Balaji Pharmacy 165,Dewas Naka,Dewas,Ayurvedic Store,D02,E10,2023-09-20,,45,Active
+C0166,Om Medicos 166,Dewas Naka,Indore,Standalone Pharmacy,D02,E11,2023-09-11,,30,Active
+C0167,Ganesh Medicos 167,Bhawarkuan,Indore,Standalone Pharmacy,D01,E08,2023-07-01,,30,Active
+C0168,Jai Pharmacy 168,Musakhedi,Dewas,Standalone Pharmacy,D02,E11,2023-09-17,,30,Active
+C0169,Shivam Ayurvedic Bhandar 169,Nipania,Dewas,Standalone Pharmacy,D02,E11,2023-10-25,,45,Active
+C0170,Maa Medicos 170,Rau,Indore,Standalone Pharmacy,D01,E06,2023-03-10,,30,Active
+C0171,Om Pharmacy 171,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2023-01-02,,15,Active
+C0172,Jai Ayurvedic Bhandar 172,Dewas Naka,Indore,Wellness Chain Outlet,D02,E09,2023-11-04,,15,Active
+C0173,Jai Medical Store 173,Ujjain Road Belt,Dewas,General Medical Store,D02,E10,2023-02-23,,30,Active
+C0174,Ganesh Pharmacy 174,Rau,Indore,Ayurvedic Store,D01,E07,2023-05-21,,30,Active
+C0175,Shree Medicos 175,Nipania,Dewas,Standalone Pharmacy,D02,E11,2023-06-22,,30,Active
+C0176,Sai Medical Store 176,Musakhedi,Ujjain,Ayurvedic Store,D02,E09,2023-10-11,,45,Active
+C0177,New Ayurvedic Bhandar 177,Rajwada,Indore,Standalone Pharmacy,D01,E06,2023-10-20,,30,Active
+C0178,Shivam Medicos 178,Rau,Indore,Standalone Pharmacy,D01,E06,2024-06-27,,30,Active
+C0179,Ganesh Ayurvedic Bhandar 179,Ujjain Road Belt,Dewas,Standalone Pharmacy,D02,E10,2024-06-17,,15,Active
+C0180,New Ayurvedic Bhandar 180,Ujjain Road Belt,Ujjain,Standalone Pharmacy,D02,E11,2024-04-20,,30,Active
+C0181,Sai Medicos 181,Sanwer Road,Indore,Standalone Pharmacy,D02,E10,2024-03-08,,15,Active
+C0182,Krishna Medicos 182,Vijay Nagar,Indore,Ayurvedic Store,D01,E08,2024-03-17,,30,Active
+C0183,Jai Medical Store 183,Musakhedi,Dewas,Ayurvedic Store,D02,E10,2024-03-18,,45,Active
+C0184,Krishna Ayurvedic Bhandar 184,Musakhedi,Indore,Standalone Pharmacy,D02,E09,2024-01-03,,45,Active
+C0185,New Ayurvedic Bhandar 185,Sarafa Bazaar,Indore,Wellness Chain Outlet,D01,E07,2024-09-01,,45,Active
+C0186,Krishna Ayurvedic Bhandar 186,Vijay Nagar,Indore,Standalone Pharmacy,D01,E07,2024-11-19,,30,Active
+C0187,Shivam Medical Store 187,Annapurna Road,Ujjain,Ayurvedic Store,D02,E10,2024-01-12,,30,Active
+C0188,Ganesh Medicos 188,Bhawarkuan,Indore,Standalone Pharmacy,D01,E07,2024-01-20,,15,Active
+C0189,New Medicos 189,Nipania,Dewas,Standalone Pharmacy,D02,E09,2024-12-07,,15,Active
+C0190,Shree Ayurvedic Bhandar 190,Musakhedi,Ujjain,Standalone Pharmacy,D02,E10,2024-01-23,,30,Active
+C0191,New Pharmacy 191,Palasia,Indore,Standalone Pharmacy,D01,E07,2024-05-22,,30,Active

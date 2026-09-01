@@ -1,0 +1,9 @@
+SupplierID,SupplierName,SupplierType,City,CityID,ContactPerson,Phone,GSTIN,LeadTimeDays,PaymentTerms,OnboardedDate,Rating_5
+SUP-01,Malwa Herbs & Botanicals,Raw Herb Supplier,Indore,CTY-01,Rajesh Sharma,+91 98270 11234,23AAFCB1000P1Z1,12,Net 30,2018-09-05,4.3
+SUP-02,Ujjain Herbal Traders,Raw Herb Supplier,Ujjain,CTY-12,Suresh Vyas,+91 94250 22456,23AAFCB1001P1Z2,15,Net 30,2018-10-12,4.0
+SUP-03,Nimar Agro Herbs,Raw Herb Supplier,Khargone,CTY-06,Prakash Patidar,+91 98935 33678,23AAFCB1002P1Z3,18,Net 45,2019-02-20,3.8
+SUP-04,Madhya Pradesh Excipients Co.,Excipient Supplier,Dewas,CTY-04,Anil Kumar Jain,+91 97522 44890,23AAFCB1003P1Z4,8,Net 30,2018-09-15,4.5
+SUP-05,Central India Chemicals,Excipient Supplier,Bhopal,CTY-18,Deepak Mehta,+91 98261 55012,23AAFCB1004P1Z5,10,Net 30,2019-05-08,4.1
+SUP-06,Shree Balaji Packaging Pvt Ltd,Packaging Material Supplier,Pithampur,CTY-03,Manoj Agrawal,+91 90391 66234,23AAFCB1005P1Z6,7,Net 15,2018-08-25,4.6
+SUP-07,Indore Glass & Plastics,Packaging Material Supplier,Indore,CTY-01,Vikas Soni,+91 96851 77456,23AAFCB1006P1Z7,6,Net 15,2018-08-30,4.2
+SUP-08,Ratlam Ayurvedic Raw Materials,Raw Herb Supplier,Ratlam,CTY-13,Nilesh Chouhan,+91 99930 88678,23AAFCB1007P1Z8,14,Net 30,2020-01-10,3.9

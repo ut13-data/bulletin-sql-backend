@@ -1,0 +1,105 @@
+ProductID,MaterialID,QtyPerUnit,UOM,Role
+P001,M01,0.095,kg/litre,Active Ingredient
+P001,M25,1.0,unit,Primary Container
+P001,M30,1.0,unit,Carton
+P001,M31,1.0,unit,Label
+P002,M02,0.095,kg/litre,Active Ingredient
+P002,M25,1.0,unit,Primary Container
+P002,M30,1.0,unit,Carton
+P002,M31,1.0,unit,Label
+P003,M03,0.095,kg/litre,Active Ingredient
+P003,M25,1.0,unit,Primary Container
+P003,M30,1.0,unit,Carton
+P003,M31,1.0,unit,Label
+P004,M04,0.048,kg/litre,Active Ingredient
+P004,M25,1.0,unit,Primary Container
+P004,M30,1.0,unit,Carton
+P004,M31,1.0,unit,Label
+P005,M05,0.06,kg/litre,Active Ingredient
+P005,M25,1.0,unit,Primary Container
+P005,M30,1.0,unit,Carton
+P005,M31,1.0,unit,Label
+P005,M32,0.015,kg,Excipient
+P006,M06,0.06,kg/litre,Active Ingredient
+P006,M25,1.0,unit,Primary Container
+P006,M30,1.0,unit,Carton
+P006,M31,1.0,unit,Label
+P006,M32,0.015,kg,Excipient
+P007,M07,0.06,kg/litre,Active Ingredient
+P007,M25,1.0,unit,Primary Container
+P007,M30,1.0,unit,Carton
+P007,M31,1.0,unit,Label
+P007,M32,0.015,kg,Excipient
+P008,M08,0.06,kg/litre,Active Ingredient
+P008,M25,1.0,unit,Primary Container
+P008,M30,1.0,unit,Carton
+P008,M31,1.0,unit,Label
+P008,M32,0.015,kg,Excipient
+P009,M09,0.44,kg/litre,Active Ingredient
+P009,M27,1.0,unit,Primary Container
+P009,M30,1.0,unit,Carton
+P009,M31,1.0,unit,Label
+P010,M10,0.44,kg/litre,Active Ingredient
+P010,M27,1.0,unit,Primary Container
+P010,M30,1.0,unit,Carton
+P010,M31,1.0,unit,Label
+P011,M11,0.44,kg/litre,Active Ingredient
+P011,M27,1.0,unit,Primary Container
+P011,M30,1.0,unit,Carton
+P011,M31,1.0,unit,Label
+P012,M13,0.195,kg/litre,Active Ingredient
+P012,M26,1.0,unit,Primary Container
+P012,M30,1.0,unit,Carton
+P012,M31,1.0,unit,Label
+P013,M14,0.195,kg/litre,Active Ingredient
+P013,M26,1.0,unit,Primary Container
+P013,M30,1.0,unit,Carton
+P013,M31,1.0,unit,Label
+P014,M07,0.195,kg/litre,Active Ingredient
+P014,M26,1.0,unit,Primary Container
+P014,M30,1.0,unit,Carton
+P014,M31,1.0,unit,Label
+P015,M17,0.098,kg/litre,Active Ingredient
+P015,M25,1.0,unit,Primary Container
+P015,M30,1.0,unit,Carton
+P015,M31,1.0,unit,Label
+P016,M16,0.098,kg/litre,Active Ingredient
+P016,M25,1.0,unit,Primary Container
+P016,M30,1.0,unit,Carton
+P016,M31,1.0,unit,Label
+P017,M15,0.098,kg/litre,Active Ingredient
+P017,M25,1.0,unit,Primary Container
+P017,M30,1.0,unit,Carton
+P017,M31,1.0,unit,Label
+P018,M18,0.058,kg/litre,Active Ingredient
+P018,M25,1.0,unit,Primary Container
+P018,M30,1.0,unit,Carton
+P018,M31,1.0,unit,Label
+P018,M32,0.015,kg,Excipient
+P019,M19,0.058,kg/litre,Active Ingredient
+P019,M25,1.0,unit,Primary Container
+P019,M30,1.0,unit,Carton
+P019,M31,1.0,unit,Label
+P019,M32,0.015,kg,Excipient
+P020,M20,0.058,kg/litre,Active Ingredient
+P020,M25,1.0,unit,Primary Container
+P020,M30,1.0,unit,Carton
+P020,M31,1.0,unit,Label
+P020,M32,0.015,kg,Excipient
+P021,M21,0.48,kg/litre,Active Ingredient
+P021,M28,1.0,unit,Primary Container
+P021,M30,1.0,unit,Carton
+P021,M31,1.0,unit,Label
+P022,M21,0.48,kg/litre,Active Ingredient
+P022,M28,1.0,unit,Primary Container
+P022,M30,1.0,unit,Carton
+P022,M31,1.0,unit,Label
+P022,M22,0.12,kg,Sweetener Base
+P023,M23,0.44,kg/litre,Active Ingredient
+P023,M27,1.0,unit,Primary Container
+P023,M30,1.0,unit,Carton
+P023,M31,1.0,unit,Label
+P024,M24,0.098,kg/litre,Active Ingredient
+P024,M29,1.0,unit,Primary Container
+P024,M30,1.0,unit,Carton
+P024,M31,1.0,unit,Label

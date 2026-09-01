@@ -1,0 +1,33 @@
+MaterialID,MaterialName,MaterialCategory,UOM,StandardUnitCost
+M01,Triphala Herb Mix,Herb Extract,kg,220.0
+M02,Hingwastak Herb Mix,Herb Extract,kg,260.0
+M03,Ashwagandha Root Powder,Herb Extract,kg,340.0
+M04,Sitopaladi Herb Mix,Herb Extract,kg,300.0
+M05,Arthritis Herb Blend (Guggulu based),Herb Extract,kg,420.0
+M06,Kabj Har Herb Blend,Herb Extract,kg,280.0
+M07,Immunity Herb Blend (Giloy/Tulsi),Herb Extract,kg,310.0
+M08,Liver Care Herb Blend (Kalmegh/Bhumyamalaki),Herb Extract,kg,330.0
+M09,Dashmool Herb Mix,Herb Extract,kg,250.0
+M10,Ashoka Bark Extract,Herb Extract,kg,240.0
+M11,Kumari (Aloe) Extract,Herb Extract,kg,200.0
+M12,Jaggery (Gudh) Base,Base Material,kg,55.0
+M13,Tulsi-Adulsa Extract,Herb Extract,kg,270.0
+M14,Amla Extract,Herb Extract,kg,180.0
+M15,Sesame Oil Base,Base Material,litre,160.0
+M16,Bhringraj Extract,Herb Extract,kg,290.0
+M17,Mahanarayan Herb Blend,Herb Extract,kg,310.0
+M18,Joint Care Herb Blend (Shallaki/Guggulu),Herb Extract,kg,400.0
+M19,Multivitamin Premix,Nutraceutical Premix,kg,520.0
+M20,Ashwagandha-Brahmi Blend,Herb Extract,kg,350.0
+M21,Chyawanprash Base Mix,Herb Extract,kg,260.0
+M22,Sugar-Free Sweetener Base,Base Material,kg,180.0
+M23,Amrutarishta Herb Mix,Herb Extract,kg,265.0
+M24,Kadha Spice Mix,Herb Extract,kg,300.0
+M25,Glass Bottle 100ml,Packaging,unit,6.5
+M26,Glass Bottle 200ml,Packaging,unit,8.5
+M27,Glass Bottle 450ml,Packaging,unit,11.0
+M28,HDPE Jar 500g,Packaging,unit,9.5
+M29,Pouch Packaging Material,Packaging,unit,3.5
+M30,Printed Carton Box,Packaging,unit,4.0
+M31,Labels & Inserts,Packaging,unit,1.2
+M32,Tablet/Capsule Excipient Mix,Excipient,kg,150.0

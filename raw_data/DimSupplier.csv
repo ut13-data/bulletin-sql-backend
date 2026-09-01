@@ -1,0 +1,9 @@
+SupplierID,SupplierName,MaterialCategory,City,AvgLeadTimeDays,ReliabilityScore
+S01,Malwa Herbal Extracts Pvt Ltd,Herb Extract,Indore,18,0.93
+S02,Narmada Ayush Ingredients,Herb Extract,Ujjain,21,0.9
+S03,Vindhya Herb Traders,Herb Extract,Dewas,15,0.95
+S04,Shree Base Materials Co.,Base Material,Indore,10,0.96
+S05,Central India Glass & Packaging,Packaging,Indore,12,0.94
+S06,Malwa Carton & Print,Packaging,Indore,9,0.97
+S07,Sanjeevani Excipients Ltd,Excipient,Pithampur,14,0.92
+S08,Om Nutraceutical Premix Supplies,Nutraceutical Premix,Indore,25,0.88
