@@ -180,7 +180,41 @@ def get_all_data():
 
     fast_movers = inv_per_product.sort_values("turnover", ascending=False).head(5)
     overstock_risks = inv_per_product.sort_values("turnover", ascending=True).head(5)
+        # Quarterly turnover: same COGS/Average-Inventory-Value logic as the
+    # fleet-level KPI, but split by calendar quarter (blended across all
+    # years, matching the existing Qtr 1-4 labels with no year breakdown).
+    # IMPORTANT: this recomputes one ratio from SUMMED raw numbers per
+    # quarter — it does NOT sum each product's or category's individual
+    # turnover ratio together. Summing ratios was the bug in the old
+    # static data (~300+ instead of a sane ~50 range), the same class of
+    # error as the previously-caught "sum vs mean" and "Warehouse Value"
+    # issues — ratios of aggregates, never aggregates of ratios.
+    inv_weekly_raw = pd.read_sql("""
+        SELECT
+            f.ProductID AS product_id,
+            f.WeekEnd AS week_end,
+            f.ClosingStock AS closing_stock,
+            f.Sold AS sold,
+            p.UnitCost AS unit_cost
+        FROM FactInventoryWeekly f
+        JOIN DimProduct p ON f.ProductID = p.ProductID
+    """, conn)
+    inv_weekly_raw["month_num"] = pd.to_datetime(inv_weekly_raw["week_end"]).dt.month
+    inv_weekly_raw["quarter"] = ((inv_weekly_raw["month_num"] - 1) // 3) + 1
 
+    quarterly_per_product = inv_weekly_raw.groupby(["quarter", "product_id"]).agg(
+        avg_closing_stock=("closing_stock", "mean"),
+        total_sold=("sold", "sum"),
+        unit_cost=("unit_cost", "first"),
+    ).reset_index()
+    quarterly_per_product["avg_inventory_value"] = quarterly_per_product["avg_closing_stock"] * quarterly_per_product["unit_cost"]
+    quarterly_per_product["cogs"] = quarterly_per_product["total_sold"] * quarterly_per_product["unit_cost"]
+
+    quarterly_turnover = quarterly_per_product.groupby("quarter").agg(
+        cogs=("cogs", "sum"),
+        avg_inventory_value=("avg_inventory_value", "sum"),
+    ).reset_index()
+    quarterly_turnover["turnover"] = quarterly_turnover["cogs"] / quarterly_turnover["avg_inventory_value"]
     conn.close()
 
     return {
@@ -261,8 +295,16 @@ def get_all_data():
                     "shelfLifeMonths": int(row["shelf_life_months"]),
                     "inventoryTurnover": round(row["turnover"], 2),
                     "warehouseValue": round(row["avg_inventory_value"], 2),
+                               
                 }
                 for _, row in inv_per_product.iterrows()
             ],
+             "quarterlyTurnover": [
+                     {
+                        "quarter": int(row["quarter"]),
+                        "inventoryTurnover": round(row["turnover"], 2),
+                      }
+                     for _, row in quarterly_turnover.iterrows()
+             ],
         }
     }
