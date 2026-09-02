@@ -143,7 +143,27 @@ def get_all_data():
         revenue=("Revenue", "sum"),
     ).reset_index()
     quarterly_grouped["gross_margin_pct"] = (quarterly_grouped["gross_profit"] / quarterly_grouped["revenue"]) * 100
-
+        # Revenue vs COGS by fiscal quarter: same COGS calc as the category
+    # breakdown (Quantity * UnitCost), joined to DimDate for FiscalYear.
+    # Fiscal quarter is derived from the calendar month (fiscal year
+    # starts April), NOT taken from DimDate.Quarter directly — that
+    # column is calendar-quarter-based and would misalign fiscal Q1
+    # with Apr-Jun.
+    rev_cogs_raw = pd.read_sql("""
+        SELECT
+            d.FiscalYear AS fiscal_year,
+            d.Month AS month_num,
+            f.LineRevenue * (1 - f.DiscountPct) AS revenue,
+            f.Quantity * p.UnitCost AS cogs
+        FROM FactSalesLines f
+        JOIN DimDate d ON f.OrderDate = d.Date
+        JOIN DimProduct p ON f.ProductID = p.ProductID
+    """, conn)
+    rev_cogs_raw["fiscal_quarter"] = ((rev_cogs_raw["month_num"] - 4) % 12) // 3 + 1
+    revenue_cogs_by_fiscal_quarter = rev_cogs_raw.groupby(["fiscal_year", "fiscal_quarter"]).agg(
+        total_revenue=("revenue", "sum"),
+        total_cogs=("cogs", "sum"),
+    ).reset_index().sort_values(["fiscal_year", "fiscal_quarter"])
     # --- Inventory Turnover KPIs ---
     inv_raw = pd.read_sql("""
         SELECT
@@ -267,6 +287,15 @@ def get_all_data():
                     "benchmarkLow": 15.0,
                 }
                 for _, row in quarterly_grouped.iterrows()
+            ],
+                "revenueCogsByFiscalQuarter": [
+                {
+                    "fiscalYear": row["fiscal_year"],
+                    "quarter": int(row["fiscal_quarter"]),
+                    "totalRevenue": round(row["total_revenue"], 2),
+                    "totalCogs": round(row["total_cogs"], 2),
+                }
+                for _, row in revenue_cogs_by_fiscal_quarter.iterrows()
             ],
         },
         "inventoryTurnover": {
