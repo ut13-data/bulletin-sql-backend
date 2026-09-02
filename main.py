@@ -54,8 +54,6 @@ def get_all_data():
     yoy_growth_pct = (fy24_rev - fy23_rev) / fy23_rev * 100
 
     # --- Revenue Chart Data ---
-    # Monthly trend: revenue + discount% per calendar month, across all years
-    # (not just FY24), since the Explore tab shows full history.
     monthly_trend = pd.read_sql("""
         SELECT
             strftime('%Y-%m', OrderDate) AS month,
@@ -66,10 +64,6 @@ def get_all_data():
         ORDER BY month
     """, conn)
 
-    # YoY monthly growth: compare each month's revenue to the same month
-    # one year earlier. Done in pandas (not SQL) since it's a row-to-row
-    # comparison across a shifted index, which pandas handles more simply
-    # than a SQL self-join here.
     monthly_trend["year"] = monthly_trend["month"].str[:4].astype(int)
     monthly_trend["month_num"] = monthly_trend["month"].str[5:7].astype(int)
     monthly_trend_sorted = monthly_trend.sort_values(["year", "month_num"]).reset_index(drop=True)
@@ -78,11 +72,8 @@ def get_all_data():
         (monthly_trend_sorted["revenue"] - monthly_trend_sorted["prior_year_revenue"])
         / monthly_trend_sorted["prior_year_revenue"] * 100
     )
-    # Only months with a valid prior-year comparison are shown (matches
-    # the Flagged YoY measure blanking out on partial/missing prior periods).
     monthly_yoy = monthly_trend_sorted.dropna(subset=["yoy_growth_pct"])
 
-    # Distributor share: revenue split by distributor as % of total.
     distributor_share = pd.read_sql("""
         SELECT
             DistributorID AS distributor_id,
@@ -93,7 +84,6 @@ def get_all_data():
     distributor_total = distributor_share["revenue"].sum()
     distributor_share["revenue_share_pct"] = distributor_share["revenue"] / distributor_total * 100
 
-    # Category share: revenue split by product category as % of total.
     category_share = pd.read_sql("""
         SELECT
             p.Category AS category,
@@ -106,7 +96,6 @@ def get_all_data():
     category_share["revenue_share_pct"] = category_share["revenue"] / category_total * 100
     category_share = category_share.sort_values("revenue_share_pct", ascending=False)
 
-    # Product revenue: total revenue per SKU, highest first.
     product_revenue = pd.read_sql("""
         SELECT
             f.ProductID AS product_id,
@@ -119,11 +108,6 @@ def get_all_data():
     """, conn)
 
     # --- Gross Margin KPIs ---
-    # Overall margin: FactFinanceMonthly already stores GrossProfit and
-    # Revenue at month grain, so we sum both and recompute the % rather
-    # than averaging the monthly percentages (averaging % would weight
-    # every month equally regardless of size, which distorts the true
-    # blended margin).
     margin_overall = pd.read_sql("""
         SELECT SUM(GrossProfit) AS total_gross_profit,
                SUM(Revenue) AS total_revenue
@@ -133,9 +117,6 @@ def get_all_data():
     margin_total_revenue = margin_overall["total_revenue"][0]
     gross_margin_pct = (total_gross_profit / margin_total_revenue) * 100
 
-    # Category breakdown: FactFinanceMonthly has no category column, so
-    # this comes from FactSalesLines (revenue) joined to DimProduct
-    # (Category + UnitCost, to derive COGS at line level).
     category_breakdown = pd.read_sql("""
         SELECT
             p.Category AS category,
@@ -150,9 +131,6 @@ def get_all_data():
         category_breakdown["gross_profit"] / category_breakdown["total_revenue"] * 100
     )
 
-    # Quarterly trend: FactFinanceMonthly.MonthYear is calendar-month
-    # (assumed format 'YYYY-MM'), so calendar quarter is derived directly
-    # from the month number rather than needing a DimDate join.
     quarterly_trend_raw = pd.read_sql("""
         SELECT MonthYear, GrossProfit, Revenue
         FROM FactFinanceMonthly
@@ -166,6 +144,43 @@ def get_all_data():
     ).reset_index()
     quarterly_grouped["gross_margin_pct"] = (quarterly_grouped["gross_profit"] / quarterly_grouped["revenue"]) * 100
 
+    # --- Inventory Turnover KPIs ---
+    inv_raw = pd.read_sql("""
+        SELECT
+            f.ProductID AS product_id,
+            f.ClosingStock AS closing_stock,
+            f.Sold AS sold
+        FROM FactInventoryWeekly f
+    """, conn)
+    product_info = pd.read_sql("""
+        SELECT ProductID AS product_id, ProductName AS product_name,
+               Category AS category, UnitCost AS unit_cost,
+               ShelfLifeMonths AS shelf_life_months
+        FROM DimProduct
+    """, conn)
+
+    inv_per_product = inv_raw.groupby("product_id").agg(
+        avg_closing_stock=("closing_stock", "mean"),
+        total_sold=("sold", "sum"),
+    ).reset_index()
+    inv_per_product = inv_per_product.merge(product_info, on="product_id")
+    inv_per_product["avg_inventory_value"] = inv_per_product["avg_closing_stock"] * inv_per_product["unit_cost"]
+    inv_per_product["cogs"] = inv_per_product["total_sold"] * inv_per_product["unit_cost"]
+    inv_per_product["turnover"] = inv_per_product["cogs"] / inv_per_product["avg_inventory_value"]
+
+    total_cogs_inv = inv_per_product["cogs"].sum()
+    total_avg_inventory_value = inv_per_product["avg_inventory_value"].sum()
+    overall_turnover = total_cogs_inv / total_avg_inventory_value
+
+    category_turnover = inv_per_product.groupby("category").agg(
+        cogs=("cogs", "sum"),
+        avg_inventory_value=("avg_inventory_value", "sum"),
+    ).reset_index()
+    category_turnover["turnover"] = category_turnover["cogs"] / category_turnover["avg_inventory_value"]
+
+    fast_movers = inv_per_product.sort_values("turnover", ascending=False).head(5)
+    overstock_risks = inv_per_product.sort_values("turnover", ascending=True).head(5)
+
     conn.close()
 
     return {
@@ -175,40 +190,23 @@ def get_all_data():
             "avgRevenuePerCustomer": f"₹{avg_rev_per_customer / 1000:.2f}K",
             "yoyGrowth": f"{yoy_growth_pct:.2f}%",
             "distributorShare": [
-                {
-                    "distributorId": row["distributor_id"],
-                    "revenueSharePct": round(row["revenue_share_pct"], 2),
-                }
+                {"distributorId": row["distributor_id"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
                 for _, row in distributor_share.iterrows()
             ],
             "categoryShare": [
-                {
-                    "category": row["category"],
-                    "revenueSharePct": round(row["revenue_share_pct"], 2),
-                }
+                {"category": row["category"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
                 for _, row in category_share.iterrows()
             ],
             "monthlyRevenueTrend": [
-                {
-                    "month": row["month"],
-                    "revenue": round(row["revenue"], 2),
-                    "discountPct": round(row["discount_pct"], 2),
-                }
+                {"month": row["month"], "revenue": round(row["revenue"], 2), "discountPct": round(row["discount_pct"], 2)}
                 for _, row in monthly_trend_sorted.iterrows()
             ],
             "monthlyYoyGrowth": [
-                {
-                    "month": row["month"],
-                    "yoyGrowthPct": round(row["yoy_growth_pct"], 2),
-                }
+                {"month": row["month"], "yoyGrowthPct": round(row["yoy_growth_pct"], 2)}
                 for _, row in monthly_yoy.iterrows()
             ],
             "productRevenue": [
-                {
-                    "productId": row["product_id"],
-                    "productName": row["product_name"],
-                    "totalRevenue": round(row["total_revenue"], 2),
-                }
+                {"productId": row["product_id"], "productName": row["product_name"], "totalRevenue": round(row["total_revenue"], 2)}
                 for _, row in product_revenue.iterrows()
             ],
         },
@@ -236,8 +234,35 @@ def get_all_data():
                 }
                 for _, row in quarterly_grouped.iterrows()
             ],
-            # revenueCogsByFiscalQuarter intentionally left out for now —
-            # needs your DimDate fiscal-quarter join confirmed first.
         },
-        "inventoryTurnover": {}
+        "inventoryTurnover": {
+            "inventoryTurnover": f"{overall_turnover:.2f}",
+            "averageInventoryValue": f"₹{total_avg_inventory_value / 100000:.2f}L",
+            "productTurnover": [
+                {"productId": row["product_id"], "inventoryTurnover": round(row["turnover"], 2)}
+                for _, row in inv_per_product.iterrows()
+            ],
+            "categoryTurnover": [
+                {"category": row["category"], "inventoryTurnover": round(row["turnover"], 2), "avgInventoryValue": round(row["avg_inventory_value"], 2)}
+                for _, row in category_turnover.iterrows()
+            ],
+            "fastMovers": [
+                {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
+                for _, row in fast_movers.iterrows()
+            ],
+            "overstockRisks": [
+                {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
+                for _, row in overstock_risks.iterrows()
+            ],
+            "shelfLifeVsTurnover": [
+                {
+                    "productId": row["product_id"],
+                    "productName": row["product_name"],
+                    "shelfLifeMonths": int(row["shelf_life_months"]),
+                    "inventoryTurnover": round(row["turnover"], 2),
+                    "warehouseValue": round(row["avg_inventory_value"], 2),
+                }
+                for _, row in inv_per_product.iterrows()
+            ],
+        }
     }
