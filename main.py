@@ -53,6 +53,71 @@ def get_all_data():
     fy24_rev = yoy[yoy["FiscalYear"] == "FY24"]["revenue"].values[0]
     yoy_growth_pct = (fy24_rev - fy23_rev) / fy23_rev * 100
 
+    # --- Revenue Chart Data ---
+    # Monthly trend: revenue + discount% per calendar month, across all years
+    # (not just FY24), since the Explore tab shows full history.
+    monthly_trend = pd.read_sql("""
+        SELECT
+            strftime('%Y-%m', OrderDate) AS month,
+            SUM(LineRevenue * (1 - DiscountPct)) AS revenue,
+            SUM(LineRevenue * DiscountPct) * 100.0 / SUM(LineRevenue) AS discount_pct
+        FROM FactSalesLines
+        GROUP BY month
+        ORDER BY month
+    """, conn)
+
+    # YoY monthly growth: compare each month's revenue to the same month
+    # one year earlier. Done in pandas (not SQL) since it's a row-to-row
+    # comparison across a shifted index, which pandas handles more simply
+    # than a SQL self-join here.
+    monthly_trend["year"] = monthly_trend["month"].str[:4].astype(int)
+    monthly_trend["month_num"] = monthly_trend["month"].str[5:7].astype(int)
+    monthly_trend_sorted = monthly_trend.sort_values(["year", "month_num"]).reset_index(drop=True)
+    monthly_trend_sorted["prior_year_revenue"] = monthly_trend_sorted.groupby("month_num")["revenue"].shift(1)
+    monthly_trend_sorted["yoy_growth_pct"] = (
+        (monthly_trend_sorted["revenue"] - monthly_trend_sorted["prior_year_revenue"])
+        / monthly_trend_sorted["prior_year_revenue"] * 100
+    )
+    # Only months with a valid prior-year comparison are shown (matches
+    # the Flagged YoY measure blanking out on partial/missing prior periods).
+    monthly_yoy = monthly_trend_sorted.dropna(subset=["yoy_growth_pct"])
+
+    # Distributor share: revenue split by distributor as % of total.
+    distributor_share = pd.read_sql("""
+        SELECT
+            DistributorID AS distributor_id,
+            SUM(LineRevenue * (1 - DiscountPct)) AS revenue
+        FROM FactSalesLines
+        GROUP BY DistributorID
+    """, conn)
+    distributor_total = distributor_share["revenue"].sum()
+    distributor_share["revenue_share_pct"] = distributor_share["revenue"] / distributor_total * 100
+
+    # Category share: revenue split by product category as % of total.
+    category_share = pd.read_sql("""
+        SELECT
+            p.Category AS category,
+            SUM(f.LineRevenue * (1 - f.DiscountPct)) AS revenue
+        FROM FactSalesLines f
+        JOIN DimProduct p ON f.ProductID = p.ProductID
+        GROUP BY p.Category
+    """, conn)
+    category_total = category_share["revenue"].sum()
+    category_share["revenue_share_pct"] = category_share["revenue"] / category_total * 100
+    category_share = category_share.sort_values("revenue_share_pct", ascending=False)
+
+    # Product revenue: total revenue per SKU, highest first.
+    product_revenue = pd.read_sql("""
+        SELECT
+            f.ProductID AS product_id,
+            p.ProductName AS product_name,
+            SUM(f.LineRevenue * (1 - f.DiscountPct)) AS total_revenue
+        FROM FactSalesLines f
+        JOIN DimProduct p ON f.ProductID = p.ProductID
+        GROUP BY f.ProductID, p.ProductName
+        ORDER BY total_revenue DESC
+    """, conn)
+
     # --- Gross Margin KPIs ---
     # Overall margin: FactFinanceMonthly already stores GrossProfit and
     # Revenue at month grain, so we sum both and recompute the % rather
@@ -108,7 +173,44 @@ def get_all_data():
             "totalRevenue": f"₹{total_rev / 1_000_000:.2f}M",
             "discountPct": f"{discount_pct:.2f}%",
             "avgRevenuePerCustomer": f"₹{avg_rev_per_customer / 1000:.2f}K",
-            "yoyGrowth": f"{yoy_growth_pct:.2f}%"
+            "yoyGrowth": f"{yoy_growth_pct:.2f}%",
+            "distributorShare": [
+                {
+                    "distributorId": row["distributor_id"],
+                    "revenueSharePct": round(row["revenue_share_pct"], 2),
+                }
+                for _, row in distributor_share.iterrows()
+            ],
+            "categoryShare": [
+                {
+                    "category": row["category"],
+                    "revenueSharePct": round(row["revenue_share_pct"], 2),
+                }
+                for _, row in category_share.iterrows()
+            ],
+            "monthlyRevenueTrend": [
+                {
+                    "month": row["month"],
+                    "revenue": round(row["revenue"], 2),
+                    "discountPct": round(row["discount_pct"], 2),
+                }
+                for _, row in monthly_trend_sorted.iterrows()
+            ],
+            "monthlyYoyGrowth": [
+                {
+                    "month": row["month"],
+                    "yoyGrowthPct": round(row["yoy_growth_pct"], 2),
+                }
+                for _, row in monthly_yoy.iterrows()
+            ],
+            "productRevenue": [
+                {
+                    "productId": row["product_id"],
+                    "productName": row["product_name"],
+                    "totalRevenue": round(row["total_revenue"], 2),
+                }
+                for _, row in product_revenue.iterrows()
+            ],
         },
         "grossMargin": {
             "grossMarginPct": f"{gross_margin_pct:.2f}%",
