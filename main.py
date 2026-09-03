@@ -235,6 +235,55 @@ def get_all_data():
         avg_inventory_value=("avg_inventory_value", "sum"),
     ).reset_index()
     quarterly_turnover["turnover"] = quarterly_turnover["cogs"] / quarterly_turnover["avg_inventory_value"]
+
+    # --- Days Inventory Outstanding (DIO) KPIs ---
+    # DIO = 365 / annualized turnover. Turnover reuses the Inventory Turnover
+    # block's math exactly: COGS = Sold * UnitCost, Average Inventory Value =
+    # mean(ClosingStock) * UnitCost. It is computed over the full weekly window
+    # then annualized by dividing by the window length in years BEFORE inverting
+    # to days — the window spans ~3 years, so 365/raw-turnover would understate
+    # DIO ~3x. Overall/category figures are ratios of SUMMED aggregates, never a
+    # mean of per-product ratios (same rule as quarterlyTurnover).
+    dio_raw = pd.read_sql("""
+        SELECT
+            f.ProductID AS product_id,
+            f.WeekEnd AS week_end,
+            f.ClosingStock AS closing_stock,
+            f.Sold AS sold,
+            p.ProductName AS product_name,
+            p.Category AS category,
+            p.UnitCost AS unit_cost
+        FROM FactInventoryWeekly f
+        JOIN DimProduct p ON f.ProductID = p.ProductID
+    """, conn)
+    dio_raw["week_end"] = pd.to_datetime(dio_raw["week_end"])
+    dio_period_years = (dio_raw["week_end"].max() - dio_raw["week_end"].min()).days / 365.0
+
+    dio_per_product = dio_raw.groupby(["product_id", "product_name", "category"]).agg(
+        avg_closing_stock=("closing_stock", "mean"),
+        total_sold=("sold", "sum"),
+        unit_cost=("unit_cost", "first"),
+    ).reset_index()
+    dio_per_product["avg_inventory_value"] = dio_per_product["avg_closing_stock"] * dio_per_product["unit_cost"]
+    dio_per_product["cogs"] = dio_per_product["total_sold"] * dio_per_product["unit_cost"]
+    dio_per_product["annualized_turnover"] = (
+        dio_per_product["cogs"] / dio_per_product["avg_inventory_value"] / dio_period_years
+    )
+    dio_per_product["dio_days"] = 365.0 / dio_per_product["annualized_turnover"]
+
+    total_cogs_dio = dio_per_product["cogs"].sum()
+    total_avg_inventory_value_dio = dio_per_product["avg_inventory_value"].sum()
+    overall_annualized_turnover = total_cogs_dio / total_avg_inventory_value_dio / dio_period_years
+    overall_dio = 365.0 / overall_annualized_turnover
+
+    category_dio = dio_per_product.groupby("category").agg(
+        cogs=("cogs", "sum"),
+        avg_inventory_value=("avg_inventory_value", "sum"),
+    ).reset_index()
+    category_dio["annualized_turnover"] = category_dio["cogs"] / category_dio["avg_inventory_value"] / dio_period_years
+    category_dio["dio_days"] = 365.0 / category_dio["annualized_turnover"]
+
+    slowest_movers_dio = dio_per_product.sort_values("dio_days", ascending=False).head(5)
     conn.close()
 
     return {
@@ -335,5 +384,26 @@ def get_all_data():
                       }
                      for _, row in quarterly_turnover.iterrows()
              ],
+        },
+        "dio": {
+            "daysInventoryOutstanding": f"{overall_dio:.1f} days",
+            "annualizedInventoryTurnover": f"{overall_annualized_turnover:.2f}",
+            "categoryDio": [
+                {
+                    "category": row["category"],
+                    "dioDays": round(row["dio_days"], 2),
+                    "annualizedTurnover": round(row["annualized_turnover"], 2),
+                }
+                for _, row in category_dio.iterrows()
+            ],
+            "slowestMovers": [
+                {
+                    "productId": row["product_id"],
+                    "category": row["category"],
+                    "productName": row["product_name"],
+                    "dioDays": round(row["dio_days"], 2),
+                }
+                for _, row in slowest_movers_dio.iterrows()
+            ],
         }
     }
