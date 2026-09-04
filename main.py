@@ -15,15 +15,20 @@ app.add_middleware(
 def get_connection():
     return sqlite3.connect("bulletin.db")
 
+# In-memory cache, keyed per dashboard. Lives as long as the Render
+# instance stays warm. Resets on cold start / redeploy, which is fine
+# since bulletin.db only changes on redeploy anyway.
+_cache = {}
+
 @app.get("/")
 def read_root():
     return {"message": "bUlleTin backend is running"}
 
-@app.get("/all-data")
-def get_all_data():
-    conn = get_connection()
 
-    # --- Revenue KPIs ---
+# ============================================================
+# REVENUE
+# ============================================================
+def _compute_revenue_data(conn):
     total_rev = pd.read_sql("""
         SELECT SUM(f.LineRevenue * (1 - f.DiscountPct)) AS revenue
         FROM FactSalesLines f
@@ -53,7 +58,6 @@ def get_all_data():
     fy24_rev = yoy[yoy["FiscalYear"] == "FY24"]["revenue"].values[0]
     yoy_growth_pct = (fy24_rev - fy23_rev) / fy23_rev * 100
 
-    # --- Revenue Chart Data ---
     monthly_trend = pd.read_sql("""
         SELECT
             strftime('%Y-%m', OrderDate) AS month,
@@ -107,7 +111,44 @@ def get_all_data():
         ORDER BY total_revenue DESC
     """, conn)
 
-    # --- Gross Margin KPIs ---
+    return {
+        "totalRevenue": f"₹{total_rev / 1_000_000:.2f}M",
+        "discountPct": f"{discount_pct:.2f}%",
+        "avgRevenuePerCustomer": f"₹{avg_rev_per_customer / 1000:.2f}K",
+        "yoyGrowth": f"{yoy_growth_pct:.2f}%",
+        "distributorShare": [
+            {"distributorId": row["distributor_id"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
+            for _, row in distributor_share.iterrows()
+        ],
+        "categoryShare": [
+            {"category": row["category"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
+            for _, row in category_share.iterrows()
+        ],
+        "monthlyRevenueTrend": [
+            {"month": row["month"], "revenue": round(row["revenue"], 2), "discountPct": round(row["discount_pct"], 2)}
+            for _, row in monthly_trend_sorted.iterrows()
+        ],
+        "monthlyYoyGrowth": [
+            {"month": row["month"], "yoyGrowthPct": round(row["yoy_growth_pct"], 2)}
+            for _, row in monthly_yoy.iterrows()
+        ],
+        "productRevenue": [
+            {"productId": row["product_id"], "productName": row["product_name"], "totalRevenue": round(row["total_revenue"], 2)}
+            for _, row in product_revenue.iterrows()
+        ],
+    }
+
+
+def get_revenue_data(conn):
+    if "revenue" not in _cache:
+        _cache["revenue"] = _compute_revenue_data(conn)
+    return _cache["revenue"]
+
+
+# ============================================================
+# GROSS MARGIN
+# ============================================================
+def _compute_gross_margin_data(conn):
     margin_overall = pd.read_sql("""
         SELECT SUM(GrossProfit) AS total_gross_profit,
                SUM(Revenue) AS total_revenue
@@ -143,12 +184,11 @@ def get_all_data():
         revenue=("Revenue", "sum"),
     ).reset_index()
     quarterly_grouped["gross_margin_pct"] = (quarterly_grouped["gross_profit"] / quarterly_grouped["revenue"]) * 100
-        # Revenue vs COGS by fiscal quarter: same COGS calc as the category
+
+    # Revenue vs COGS by fiscal quarter: same COGS calc as the category
     # breakdown (Quantity * UnitCost), joined to DimDate for FiscalYear.
     # Fiscal quarter is derived from the calendar month (fiscal year
-    # starts April), NOT taken from DimDate.Quarter directly — that
-    # column is calendar-quarter-based and would misalign fiscal Q1
-    # with Apr-Jun.
+    # starts April), NOT taken from DimDate.Quarter directly.
     rev_cogs_raw = pd.read_sql("""
         SELECT
             d.FiscalYear AS fiscal_year,
@@ -164,7 +204,53 @@ def get_all_data():
         total_revenue=("revenue", "sum"),
         total_cogs=("cogs", "sum"),
     ).reset_index().sort_values(["fiscal_year", "fiscal_quarter"])
-    # --- Inventory Turnover KPIs ---
+
+    return {
+        "grossMarginPct": f"{gross_margin_pct:.2f}%",
+        "grossProfit": f"₹{total_gross_profit / 1_000_000:.2f}M",
+        "categoryBreakdown": [
+            {
+                "category": row["category"],
+                "grossProfit": round(row["gross_profit"], 2),
+                "totalRevenue": round(row["total_revenue"], 2),
+                "grossMarginPct": round(row["gross_margin_pct"], 2),
+                "totalCogs": round(row["total_cogs"], 2),
+            }
+            for _, row in category_breakdown.iterrows()
+        ],
+        "quarterlyTrend": [
+            {
+                "year": int(row["year"]),
+                "quarter": f"Qtr {int(row['quarter'])}",
+                "grossProfit": round(row["gross_profit"], 2),
+                "grossMarginPct": round(row["gross_margin_pct"], 2),
+                "benchmarkHigh": 35.0,
+                "benchmarkLow": 15.0,
+            }
+            for _, row in quarterly_grouped.iterrows()
+        ],
+        "revenueCogsByFiscalQuarter": [
+            {
+                "fiscalYear": row["fiscal_year"],
+                "quarter": int(row["fiscal_quarter"]),
+                "totalRevenue": round(row["total_revenue"], 2),
+                "totalCogs": round(row["total_cogs"], 2),
+            }
+            for _, row in revenue_cogs_by_fiscal_quarter.iterrows()
+        ],
+    }
+
+
+def get_gross_margin_data(conn):
+    if "grossMargin" not in _cache:
+        _cache["grossMargin"] = _compute_gross_margin_data(conn)
+    return _cache["grossMargin"]
+
+
+# ============================================================
+# INVENTORY TURNOVER
+# ============================================================
+def _compute_inventory_turnover_data(conn):
     inv_raw = pd.read_sql("""
         SELECT
             f.ProductID AS product_id,
@@ -200,15 +286,9 @@ def get_all_data():
 
     fast_movers = inv_per_product.sort_values("turnover", ascending=False).head(5)
     overstock_risks = inv_per_product.sort_values("turnover", ascending=True).head(5)
-        # Quarterly turnover: same COGS/Average-Inventory-Value logic as the
-    # fleet-level KPI, but split by calendar quarter (blended across all
-    # years, matching the existing Qtr 1-4 labels with no year breakdown).
-    # IMPORTANT: this recomputes one ratio from SUMMED raw numbers per
-    # quarter — it does NOT sum each product's or category's individual
-    # turnover ratio together. Summing ratios was the bug in the old
-    # static data (~300+ instead of a sane ~50 range), the same class of
-    # error as the previously-caught "sum vs mean" and "Warehouse Value"
-    # issues — ratios of aggregates, never aggregates of ratios.
+
+    # Quarterly turnover: ratio of SUMMED aggregates per quarter, never a
+    # sum/mean of individual product ratios.
     inv_weekly_raw = pd.read_sql("""
         SELECT
             f.ProductID AS product_id,
@@ -236,14 +316,61 @@ def get_all_data():
     ).reset_index()
     quarterly_turnover["turnover"] = quarterly_turnover["cogs"] / quarterly_turnover["avg_inventory_value"]
 
-    # --- Days Inventory Outstanding (DIO) KPIs ---
-    # DIO = 365 / annualized turnover. Turnover reuses the Inventory Turnover
-    # block's math exactly: COGS = Sold * UnitCost, Average Inventory Value =
-    # mean(ClosingStock) * UnitCost. It is computed over the full weekly window
-    # then annualized by dividing by the window length in years BEFORE inverting
-    # to days — the window spans ~3 years, so 365/raw-turnover would understate
-    # DIO ~3x. Overall/category figures are ratios of SUMMED aggregates, never a
-    # mean of per-product ratios (same rule as quarterlyTurnover).
+    return {
+        "inventoryTurnover": f"{overall_turnover:.2f}",
+        "averageInventoryValue": f"₹{total_avg_inventory_value / 100000:.2f}L",
+        "productTurnover": [
+            {"productId": row["product_id"], "inventoryTurnover": round(row["turnover"], 2)}
+            for _, row in inv_per_product.iterrows()
+        ],
+        "categoryTurnover": [
+            {"category": row["category"], "inventoryTurnover": round(row["turnover"], 2), "avgInventoryValue": round(row["avg_inventory_value"], 2)}
+            for _, row in category_turnover.iterrows()
+        ],
+        "fastMovers": [
+            {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
+            for _, row in fast_movers.iterrows()
+        ],
+        "overstockRisks": [
+            {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
+            for _, row in overstock_risks.iterrows()
+        ],
+        "shelfLifeVsTurnover": [
+            {
+                "productId": row["product_id"],
+                "productName": row["product_name"],
+                "shelfLifeMonths": int(row["shelf_life_months"]),
+                "inventoryTurnover": round(row["turnover"], 2),
+                "warehouseValue": round(row["avg_inventory_value"], 2),
+            }
+            for _, row in inv_per_product.iterrows()
+        ],
+        "quarterlyTurnover": [
+            {
+                "quarter": int(row["quarter"]),
+                "inventoryTurnover": round(row["turnover"], 2),
+            }
+            for _, row in quarterly_turnover.iterrows()
+        ],
+    }
+
+
+def get_inventory_turnover_data(conn):
+    if "inventoryTurnover" not in _cache:
+        _cache["inventoryTurnover"] = _compute_inventory_turnover_data(conn)
+    return _cache["inventoryTurnover"]
+
+
+# ============================================================
+# DAYS INVENTORY OUTSTANDING (DIO)
+# ============================================================
+def _compute_dio_data(conn):
+    # DIO = 365 / annualized turnover. Turnover reuses the Inventory
+    # Turnover block's math exactly: COGS = Sold * UnitCost, Average
+    # Inventory Value = mean(ClosingStock) * UnitCost. Computed over the
+    # full weekly window then annualized by dividing by the window length
+    # in years BEFORE inverting to days. Overall/category figures are
+    # ratios of SUMMED aggregates, never a mean of per-product ratios.
     dio_raw = pd.read_sql("""
         SELECT
             f.ProductID AS product_id,
@@ -284,126 +411,75 @@ def get_all_data():
     category_dio["dio_days"] = 365.0 / category_dio["annualized_turnover"]
 
     slowest_movers_dio = dio_per_product.sort_values("dio_days", ascending=False).head(5)
-    conn.close()
 
     return {
-        "revenue": {
-            "totalRevenue": f"₹{total_rev / 1_000_000:.2f}M",
-            "discountPct": f"{discount_pct:.2f}%",
-            "avgRevenuePerCustomer": f"₹{avg_rev_per_customer / 1000:.2f}K",
-            "yoyGrowth": f"{yoy_growth_pct:.2f}%",
-            "distributorShare": [
-                {"distributorId": row["distributor_id"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
-                for _, row in distributor_share.iterrows()
-            ],
-            "categoryShare": [
-                {"category": row["category"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
-                for _, row in category_share.iterrows()
-            ],
-            "monthlyRevenueTrend": [
-                {"month": row["month"], "revenue": round(row["revenue"], 2), "discountPct": round(row["discount_pct"], 2)}
-                for _, row in monthly_trend_sorted.iterrows()
-            ],
-            "monthlyYoyGrowth": [
-                {"month": row["month"], "yoyGrowthPct": round(row["yoy_growth_pct"], 2)}
-                for _, row in monthly_yoy.iterrows()
-            ],
-            "productRevenue": [
-                {"productId": row["product_id"], "productName": row["product_name"], "totalRevenue": round(row["total_revenue"], 2)}
-                for _, row in product_revenue.iterrows()
-            ],
-        },
-        "grossMargin": {
-            "grossMarginPct": f"{gross_margin_pct:.2f}%",
-            "grossProfit": f"₹{total_gross_profit / 1_000_000:.2f}M",
-            "categoryBreakdown": [
-                {
-                    "category": row["category"],
-                    "grossProfit": round(row["gross_profit"], 2),
-                    "totalRevenue": round(row["total_revenue"], 2),
-                    "grossMarginPct": round(row["gross_margin_pct"], 2),
-                    "totalCogs": round(row["total_cogs"], 2),
-                }
-                for _, row in category_breakdown.iterrows()
-            ],
-            "quarterlyTrend": [
-                {
-                    "year": int(row["year"]),
-                    "quarter": f"Qtr {int(row['quarter'])}",
-                    "grossProfit": round(row["gross_profit"], 2),
-                    "grossMarginPct": round(row["gross_margin_pct"], 2),
-                    "benchmarkHigh": 35.0,
-                    "benchmarkLow": 15.0,
-                }
-                for _, row in quarterly_grouped.iterrows()
-            ],
-                "revenueCogsByFiscalQuarter": [
-                {
-                    "fiscalYear": row["fiscal_year"],
-                    "quarter": int(row["fiscal_quarter"]),
-                    "totalRevenue": round(row["total_revenue"], 2),
-                    "totalCogs": round(row["total_cogs"], 2),
-                }
-                for _, row in revenue_cogs_by_fiscal_quarter.iterrows()
-            ],
-        },
-        "inventoryTurnover": {
-            "inventoryTurnover": f"{overall_turnover:.2f}",
-            "averageInventoryValue": f"₹{total_avg_inventory_value / 100000:.2f}L",
-            "productTurnover": [
-                {"productId": row["product_id"], "inventoryTurnover": round(row["turnover"], 2)}
-                for _, row in inv_per_product.iterrows()
-            ],
-            "categoryTurnover": [
-                {"category": row["category"], "inventoryTurnover": round(row["turnover"], 2), "avgInventoryValue": round(row["avg_inventory_value"], 2)}
-                for _, row in category_turnover.iterrows()
-            ],
-            "fastMovers": [
-                {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
-                for _, row in fast_movers.iterrows()
-            ],
-            "overstockRisks": [
-                {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
-                for _, row in overstock_risks.iterrows()
-            ],
-            "shelfLifeVsTurnover": [
-                {
-                    "productId": row["product_id"],
-                    "productName": row["product_name"],
-                    "shelfLifeMonths": int(row["shelf_life_months"]),
-                    "inventoryTurnover": round(row["turnover"], 2),
-                    "warehouseValue": round(row["avg_inventory_value"], 2),
-                               
-                }
-                for _, row in inv_per_product.iterrows()
-            ],
-             "quarterlyTurnover": [
-                     {
-                        "quarter": int(row["quarter"]),
-                        "inventoryTurnover": round(row["turnover"], 2),
-                      }
-                     for _, row in quarterly_turnover.iterrows()
-             ],
-        },
-        "dio": {
-            "daysInventoryOutstanding": f"{overall_dio:.1f} days",
-            "annualizedInventoryTurnover": f"{overall_annualized_turnover:.2f}",
-            "categoryDio": [
-                {
-                    "category": row["category"],
-                    "dioDays": round(row["dio_days"], 2),
-                    "annualizedTurnover": round(row["annualized_turnover"], 2),
-                }
-                for _, row in category_dio.iterrows()
-            ],
-            "slowestMovers": [
-                {
-                    "productId": row["product_id"],
-                    "category": row["category"],
-                    "productName": row["product_name"],
-                    "dioDays": round(row["dio_days"], 2),
-                }
-                for _, row in slowest_movers_dio.iterrows()
-            ],
-        }
+        "daysInventoryOutstanding": f"{overall_dio:.1f} days",
+        "annualizedInventoryTurnover": f"{overall_annualized_turnover:.2f}",
+        "categoryDio": [
+            {
+                "category": row["category"],
+                "dioDays": round(row["dio_days"], 2),
+                "annualizedTurnover": round(row["annualized_turnover"], 2),
+            }
+            for _, row in category_dio.iterrows()
+        ],
+        "slowestMovers": [
+            {
+                "productId": row["product_id"],
+                "category": row["category"],
+                "productName": row["product_name"],
+                "dioDays": round(row["dio_days"], 2),
+            }
+            for _, row in slowest_movers_dio.iterrows()
+        ],
     }
+
+
+def get_dio_data(conn):
+    if "dio" not in _cache:
+        _cache["dio"] = _compute_dio_data(conn)
+    return _cache["dio"]
+
+
+# ============================================================
+# ENDPOINTS — one per dashboard, plus /all-data for Overview
+# ============================================================
+@app.get("/revenue")
+def revenue_endpoint():
+    conn = get_connection()
+    data = {"revenue": get_revenue_data(conn)}
+    conn.close()
+    return data
+
+@app.get("/gross-margin")
+def gross_margin_endpoint():
+    conn = get_connection()
+    data = {"grossMargin": get_gross_margin_data(conn)}
+    conn.close()
+    return data
+
+@app.get("/inventory-turnover")
+def inventory_turnover_endpoint():
+    conn = get_connection()
+    data = {"inventoryTurnover": get_inventory_turnover_data(conn)}
+    conn.close()
+    return data
+
+@app.get("/dio")
+def dio_endpoint():
+    conn = get_connection()
+    data = {"dio": get_dio_data(conn)}
+    conn.close()
+    return data
+
+@app.get("/all-data")
+def get_all_data():
+    conn = get_connection()
+    data = {
+        "revenue": get_revenue_data(conn),
+        "grossMargin": get_gross_margin_data(conn),
+        "inventoryTurnover": get_inventory_turnover_data(conn),
+        "dio": get_dio_data(conn),
+    }
+    conn.close()
+    return data
