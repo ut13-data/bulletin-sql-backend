@@ -6,7 +6,28 @@ import pandas as pd
 import os
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+#from langchain_community.embeddings import HuggingFaceEmbeddings
+import requests
+
+class HFAPIEmbeddings:
+    def __init__(self, api_token):
+        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        self.headers = {"Authorization": f"Bearer {api_token}"}
+
+    def _embed(self, texts):
+        response = requests.post(
+            self.api_url,
+            headers=self.headers,
+            json={"inputs": texts, "options": {"wait_for_model": True}},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def embed_documents(self, texts):
+        return self._embed(texts)
+
+    def embed_query(self, text):
+        return self._embed([text])[0]
 from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
 from groq import Groq
@@ -484,7 +505,7 @@ def _compute_vectorstore():
     for chunk in chunk2:
         content.append(chunk.page_content)
 
-    model = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
+    model = HFAPIEmbeddings(api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
     vectorstore = FAISS.from_texts(content, model)
     return vectorstore
 
