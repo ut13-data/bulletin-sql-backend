@@ -11,7 +11,7 @@ import requests
 
 class HFAPIEmbeddings:
     def __init__(self, api_token):
-        self.api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        self.api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
         self.headers = {"Authorization": f"Bearer {api_token}"}
 
     def _embed(self, texts):
