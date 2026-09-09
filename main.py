@@ -5,11 +5,12 @@ import sqlite3
 import pandas as pd
 import os
 
+from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 #from langchain_community.embeddings import HuggingFaceEmbeddings
 import requests
 
-class HFAPIEmbeddings:
+class HFAPIEmbeddings(Embeddings):
     def __init__(self, api_token):
         self.api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
         self.headers = {"Authorization": f"Bearer {api_token}"}
