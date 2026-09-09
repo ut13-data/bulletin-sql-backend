@@ -1,14 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import sqlite3
 import pandas as pd
+import os
+
+from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from dotenv import load_dotenv
+from groq import Groq
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://bulletin-balaji-pharma.vercel.app", "http://localhost:3000"],
-     allow_origin_regex=r"https://bulletin-balaji-pharma.*\.vercel\.app",
+    allow_origin_regex=r"https://bulletin-balaji-pharma.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -20,6 +28,13 @@ def get_connection():
 # instance stays warm. Resets on cold start / redeploy, which is fine
 # since bulletin.db only changes on redeploy anyway.
 _cache = {}
+
+# ============================================================
+# RAG / ASK BULLETIN — Groq client setup
+# ============================================================
+load_dotenv()
+groq_key = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=groq_key)
 
 @app.get("/")
 def read_root():
@@ -440,6 +455,69 @@ def get_dio_data(conn):
     if "dio" not in _cache:
         _cache["dio"] = _compute_dio_data(conn)
     return _cache["dio"]
+
+
+# ============================================================
+# RAG / ASK BULLETIN — vectorstore build + retrieval + generation
+# ============================================================
+def _compute_vectorstore():
+    with open('docs/Balaji_Pharma_Database_Architecture.md', 'r', encoding='utf-8') as f1, \
+         open('docs/Balaji_Pharma_Business_Definition.md', 'r', encoding='utf-8') as f2:
+        t1 = f1.read()
+        t2 = f2.read()
+
+    # Different header depth per doc: architecture doc's real table
+    # boundaries sit at ### (one per table), business doc's real section
+    # boundaries sit at ## only.
+    headers_architecture = [("##", "section"), ("###", "subsection")]
+    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_architecture)
+    chunk1 = splitter.split_text(t1)
+
+    headers_business = [("##", "section")]
+    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_business)
+    chunk2 = splitter.split_text(t2)
+
+    content = list()
+    for chunk in chunk1:
+        content.append(chunk.page_content)
+
+    for chunk in chunk2:
+        content.append(chunk.page_content)
+
+    model = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
+    vectorstore = FAISS.from_texts(content, model)
+    return vectorstore
+
+
+def get_vectorstore():
+    if "vectorstore" not in _cache:
+        _cache["vectorstore"] = _compute_vectorstore()
+    return _cache["vectorstore"]
+
+
+class RagQueryRequest(BaseModel):
+    question: str
+
+
+@app.post("/rag-query")
+def rag_query_endpoint(request: RagQueryRequest):
+    vectorstore = get_vectorstore()
+    results = vectorstore.similarity_search(request.question, k=3)
+
+    retr = list()
+    for result in results:
+        retr.append(result.page_content)
+
+    prompt = f"Context: \n\n{retr[0]}\n{retr[1]}\n{retr[2]}\n\nUsing only the context above, answer the question. If the answer isn't in the context, say you don't know.\n\nQuestion: {request.question}"
+
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return {"answer": response.choices[0].message.content}
 
 
 # ============================================================
