@@ -12,6 +12,6 @@ h11==0.16.0
 langchain-text-splitters
 langchain-community
 faiss-cpu
-sentence-transformers
 python-dotenv
 groq
+requests
