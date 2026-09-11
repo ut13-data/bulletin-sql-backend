@@ -545,6 +545,9 @@ def rag_query_endpoint(request: RagQueryRequest):
     # (k=5) so filtering by threshold still leaves a real choice.
     results_with_scores = vectorstore.similarity_search_with_score(request.question, k=5)
 
+    # TEMPORARY DEBUG — remove once threshold is calibrated
+    print("DEBUG scores:", [(round(score, 3), doc.metadata.get("section", "")) for doc, score in results_with_scores])
+
     # Only keep chunks that clear the similarity bar. This runs BEFORE
     # calling Groq at all -- if nothing clears it, skip Groq entirely
     # and answer "not found" directly, instead of hoping Groq notices
