@@ -534,7 +534,7 @@ class RagQueryRequest(BaseModel):
 # meaning). This is the opposite direction from cosine similarity.
 # Starting value, tune after testing against real known-good/known-bad
 # question pairs (e.g. "flow of the company" vs "DistributionCluster").
-SIMILARITY_DISTANCE_THRESHOLD = 1.0
+SIMILARITY_DISTANCE_THRESHOLD = 1.3
 
 
 @app.post("/rag-query")
