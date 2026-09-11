@@ -499,15 +499,22 @@ def _compute_vectorstore():
     splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_business)
     chunk2 = splitter.split_text(t2)
 
+    # STAGE 5: keep each chunk's metadata (section/subsection) so we can
+    # cite where an answer came from. Previously this was dropped --
+    # FAISS.from_texts() only stored the plain text.
     content = list()
+    metadatas = list()
+
     for chunk in chunk1:
         content.append(chunk.page_content)
+        metadatas.append({**chunk.metadata, "source": "Database Architecture"})
 
     for chunk in chunk2:
         content.append(chunk.page_content)
+        metadatas.append({**chunk.metadata, "source": "Business Definition"})
 
     model = HFAPIEmbeddings(api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
-    vectorstore = FAISS.from_texts(content, model)
+    vectorstore = FAISS.from_texts(content, model, metadatas=metadatas)
     return vectorstore
 
 
@@ -521,16 +528,45 @@ class RagQueryRequest(BaseModel):
     question: str
 
 
+# STAGE 5: a chunk is only used if its DISTANCE score clears this bar.
+# FAISS's similarity_search_with_score returns a DISTANCE, not a
+# similarity percentage -- LOWER means MORE similar (0 = identical
+# meaning). This is the opposite direction from cosine similarity.
+# Starting value, tune after testing against real known-good/known-bad
+# question pairs (e.g. "flow of the company" vs "DistributionCluster").
+SIMILARITY_DISTANCE_THRESHOLD = 1.0
+
+
 @app.post("/rag-query")
 def rag_query_endpoint(request: RagQueryRequest):
     vectorstore = get_vectorstore()
-    results = vectorstore.similarity_search(request.question, k=3)
 
-    retr = list()
-    for result in results:
-        retr.append(result.page_content)
+    # Returns (Document, distance) pairs. Ask for more than we need
+    # (k=5) so filtering by threshold still leaves a real choice.
+    results_with_scores = vectorstore.similarity_search_with_score(request.question, k=5)
 
-    prompt = f"Context: \n\n{retr[0]}\n{retr[1]}\n{retr[2]}\n\nUsing only the context above, answer the question. If the answer isn't in the context, say you don't know.\n\nQuestion: {request.question}"
+    # Only keep chunks that clear the similarity bar. This runs BEFORE
+    # calling Groq at all -- if nothing clears it, skip Groq entirely
+    # and answer "not found" directly, instead of hoping Groq notices
+    # the retrieved chunks are irrelevant.
+    relevant = [
+        (doc, score) for doc, score in results_with_scores
+        if score <= SIMILARITY_DISTANCE_THRESHOLD
+    ]
+
+    if not relevant:
+        return {
+            "answer": "I don't know.",
+            "found": False,
+            "sources": [],
+        }
+
+    relevant = relevant[:3]  # cap at top 3 of the ones that passed
+
+    context_blocks = [doc.page_content for doc, _ in relevant]
+    context_text = "\n\n".join(context_blocks)
+
+    prompt = f"Context: \n\n{context_text}\n\nUsing only the context above, answer the question. If the answer isn't in the context, say you don't know.\n\nQuestion: {request.question}"
 
     response = client.chat.completions.create(
         model="openai/gpt-oss-120b",
@@ -539,7 +575,28 @@ def rag_query_endpoint(request: RagQueryRequest):
         ]
     )
 
-    return {"answer": response.choices[0].message.content}
+    answer_text = response.choices[0].message.content
+
+    # Real citations, built from the metadata we now preserve.
+    sources = []
+    for doc, score in relevant:
+        sources.append({
+            "document": doc.metadata.get("source", "Unknown"),
+            "section": doc.metadata.get("section", ""),
+            "subsection": doc.metadata.get("subsection", ""),
+        })
+
+    # A real boolean instead of phrase-matching "I don't know" text in
+    # Next.js. Still checks the LLM's own literal refusal phrase as a
+    # backstop, in case the model decides none of the (threshold-passed)
+    # chunks actually answer the question.
+    found = answer_text.strip().lower() not in ("i don't know.", "i don't know")
+
+    return {
+        "answer": answer_text,
+        "found": found,
+        "sources": sources,
+    }
 
 
 # ============================================================
