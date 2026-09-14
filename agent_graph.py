@@ -47,12 +47,19 @@ class GraphState(TypedDict):
 
 def classify_node(state: GraphState) -> GraphState:
     classify_prompt = (
-        "Classify this question into exactly one word: \"live\" (needs real-time "
-        "Balaji Pharma dashboard numbers like revenue, margin, inventory), \"rag\" "
-        "(asks about business definitions, processes, or database structure), or "
-        "\"off-topic\" (unrelated to Balaji Pharma's business entirely). Respond with "
-        f"only one word.\n\nQuestion: {state['question']}"
-    )
+    "Classify this question into exactly one word: \"live\" (needs real-time "
+    "Balaji Pharma dashboard numbers — revenue, margin, inventory, turnover, "
+    "any specific metric or KPI, even phrased casually like \"what is my margin\" "
+    "or \"how's revenue looking\"), \"rag\" (asks about business definitions, "
+    "processes, database structure, or what a term/table means), or \"off-topic\" "
+    "(unrelated to Balaji Pharma's business entirely). Examples:\n"
+    "\"What is my margin?\" -> live\n"
+    "\"How is the revenue?\" -> live\n"
+    "\"What does DistributorID represent?\" -> rag\n"
+    "\"What is the typical shelf life storage condition?\" -> rag\n"
+    "Respond with only one word.\n\n"
+    f"Question: {state['question']}"
+)
     response = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": classify_prompt}],
@@ -69,7 +76,7 @@ def classify_node(state: GraphState) -> GraphState:
     elif "rag" in raw:
         label = "rag"
     else:
-        label = "rag"  # safe fallback, same as classifyWithGroq in route.ts
+         label = "live"  # changed from "rag" — most ambiguous questions here are metric questions
 
     state["route_decision"] = label
     return state
