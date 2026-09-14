@@ -11,6 +11,8 @@ h11==0.16.0
 
 langchain-text-splitters
 langchain-community
+langgraph
+langchain-core
 faiss-cpu
 python-dotenv
 groq
