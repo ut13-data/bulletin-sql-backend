@@ -10,6 +10,10 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter
 #from langchain_community.embeddings import HuggingFaceEmbeddings
 import requests
 
+from pydantic import BaseModel
+
+
+
 class HFAPIEmbeddings(Embeddings):
     def __init__(self, api_token):
         self.api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
@@ -644,3 +648,12 @@ def get_all_data():
     }
     conn.close()
     return data
+
+import agent_graph
+
+class AgentQueryRequest(BaseModel):
+    question: str
+
+@app.post("/agent-query")
+def agent_query_endpoint(request: AgentQueryRequest):
+    return agent_graph.run_agent(request.question)
