@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import sqlite3
 import pandas as pd
 import os
-
+from fastapi import FastAPI, HTTPException
 from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 #from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -653,7 +653,20 @@ import agent_graph
 
 class AgentQueryRequest(BaseModel):
     question: str
+    thread_id: str
+
+
 
 @app.post("/agent-query")
 def agent_query_endpoint(request: AgentQueryRequest):
-    return agent_graph.run_agent(request.question)
+    try:
+        return agent_graph.run_agent(request.question, request.thread_id)
+    except Exception as e:
+        print(f"Agent-query error: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong processing that question.")
+
+@app.get("/debug-thread/{thread_id}")
+def debug_thread(thread_id: str):
+    config = {"configurable": {"thread_id": thread_id}}
+    state = agent_graph.compiled_graph.get_state(config)
+    return state.values
