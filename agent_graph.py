@@ -18,6 +18,28 @@ from main import (
 MODEL = "openai/gpt-oss-120b"
 MAX_TURNS = 5
 
+
+
+SQL_TOOL_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sql_query",
+            "description": "Run a read-only SQL SELECT query against the Balaji Pharma database to answer questions not covered by the standard dashboards (revenue, gross margin, inventory turnover, DIO).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "A single valid SQLite SELECT query."
+                    }
+                },
+                "required": ["sql"]
+            }
+        }
+    }
+]
+
 STRUCTURED_SYSTEM_PROMPT = (
     "You are a business intelligence assistant for Balaji Pharma, an Ayurvedic "
     "pharmaceutical distribution company. You answer questions using ONLY the data "
@@ -67,29 +89,77 @@ def format_sources(sources: list) -> str:
         lines.append(f"{s['document']} — {label}" if label else s["document"])
     return "; ".join(dict.fromkeys(lines))  # dedupes while keeping order
 
+import os
+import sqlite3
+
+DB_PATH = os.path.abspath("bulletin.db")
+MAX_ROWS = 200
+
+def run_sql_query(sql: str) -> dict:
+    # Step 1: reject anything that isn't a SELECT, before touching the DB at all.
+    cleaned = sql.strip()
+    if not cleaned.lower().startswith("select"):
+        return {"error": "Only SELECT queries are allowed."}
+
+    try:
+        # Step 2: true read-only connection via SQLite's URI mode.
+        # mode=ro means even a successful bypass of the check above
+        # would still fail at the database driver level, not just be "asked nicely."
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(cleaned)
+
+        # Step 3: hard row cap, so one broad query can't flood the prompt
+        # with tens of thousands of rows.
+        rows = cursor.fetchmany(MAX_ROWS)
+        columns = [description[0] for description in cursor.description]
+        result = [dict(zip(columns, row)) for row in rows]
+
+        conn.close()
+        return {"rows": result, "row_count": len(result), "truncated": len(result) == MAX_ROWS}
+
+    except sqlite3.Error as e:
+        return {"error": f"SQL error: {str(e)}"}
+
+def get_schema_summary() -> str:
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    cursor = conn.cursor()
+    EXCLUDED_TABLES = {"fact_procurement_transactions.csv"}
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row[0] for row in cursor.fetchall() if row[0] not in EXCLUDED_TABLES]
+    lines = []
+    for table in tables:
+        cursor.execute(f"PRAGMA table_info([{table}])")
+        columns = [row[1] for row in cursor.fetchall()]
+        lines.append(f"{table}({', '.join(columns)})")
+
+    conn.close()
+    return "\n".join(lines)
+
 
 def classify_node(state: GraphState) -> GraphState:
     history_context = build_history_context(state)
 
     classify_prompt = (
         f"{history_context}"
-        "Classify this question into exactly one word: \"live\" (needs real-time "
-        "Balaji Pharma dashboard numbers — revenue, margin, inventory, turnover, "
-        "any specific metric or KPI, including follow-ups like \"what should I do "
-        "about it\" that refer back to a previous live-data answer above), \"rag\" "
-        "(asks about business definitions, processes, database structure, or what a "
-        "term/table means), \"both\" (a broad or exploratory question that needs BOTH "
-        "live numbers AND business context to answer well — e.g. \"how is the company "
-        "performing\", or a question combining a live metric with a process/definition "
-        "question), or \"off-topic\" (unrelated to Balaji Pharma's business entirely, "
-        "with no connection to the previous questions above). "
-        "Examples:\n"
-        "\"What is my margin?\" -> live\n"
-        "\"Why is margin falling?\" -> live\n"
-        "\"What does DistributorID represent?\" -> rag\n"
-        "\"How is the company performing?\" -> both\n"
-        "\"What is the flow of this company and how's revenue doing?\" -> both\n"
-        "Respond with only one word.\n\n"
+       "If the question is vague (\"it\", \"that\", \"how about\", \"what should "
+        "I do\"), mentally rewrite it using the previous Q/A above before "
+        "classifying. E.g. prev=\"why is margin falling\", now=\"how about it\" -> "
+        "treat as \"how about margin falling\".\n"
+        "Classify into one word: \"live\" (revenue/margin/inventory/turnover/any "
+        "KPI, or a follow-up on one, covered by the standard dashboards), \"rag\" "
+        "(definitions, processes, DB structure), \"both\" (broad question needing "
+        "live + business context), \"sql_agent\" (asks something specific NOT "
+        "covered by the standard dashboards — rankings, comparisons across "
+        "distributors/suppliers/customers, specific SKU-level or time-period "
+        "breakdowns, anything needing a custom database query), \"off-topic\" "
+        "(unrelated, no link to prior questions).\n"
+        "Examples: \"What is my margin?\"->live | \"Why is margin falling?\"->live "
+        "| \"What does DistributorID represent?\"->rag | \"How is the company "
+        "performing?\"->both | \"Which 3 distributors had the highest revenue?\"->sql_agent "
+        "| \"Which supplier has the worst on-time delivery?\"->sql_agent\n"
+        "One word only.\n\n"
         f"Question: {state['question']}"
     )
     response = client.chat.completions.create(
@@ -103,6 +173,8 @@ def classify_node(state: GraphState) -> GraphState:
 
     if "off-topic" in raw:
         label = "off-topic"
+    elif "sql_agent" in raw:
+        label = "sql_agent"
     elif "both" in raw:
         label = "both"
     elif "live" in raw:
@@ -264,6 +336,76 @@ def both_node(state: GraphState) -> GraphState:
     state["sources"] = rag_result["sources"] if rag_has_real_answer else []
     return state
 
+MAX_SQL_LOOPS = 3
+
+def sql_agent_node(state: GraphState) -> GraphState:
+    schema = get_schema_summary()
+    history_context = build_history_context(state)
+
+    system_prompt = (
+        f"You are a SQL analyst for Balaji Pharma. Use the run_sql_query tool to "
+        f"answer the question. Only SELECT queries work. Here is the COMPLETE "
+        f"database schema — these are the ONLY tables and columns that exist:\n\n"
+        f"{schema}\n\n"
+        f"Never reference, suggest, or speculate about a table or column that is "
+        f"not listed above, even hedged (e.g. do not say \"if you have a "
+        f"delivery_log table\"). If answering the question well would require "
+        f"data that doesn't exist in this schema, say so plainly instead of "
+        f"guessing what might exist.\n"
+        f"After you have enough information, respond with a final plain-text "
+        f"answer, 2-4 sentences, citing real numbers from the query results. "
+        f"Do not call the tool again once you have enough to answer."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{history_context}Question: {state['question']}"},
+    ]
+
+    queries_run = []
+
+    for _ in range(MAX_SQL_LOOPS):
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=SQL_TOOL_SCHEMA,
+            temperature=0,
+            max_tokens=800,
+            reasoning_effort="low",
+        )
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            # Model decided it has enough — this is the final answer.
+            state["explanation"] = message.content or "I don't know."
+            state["found"] = bool(message.content)
+            state["evidence"] = "; ".join(queries_run) if queries_run else ""
+            return state
+
+        # Model wants to run a query — execute it for real, feed result back.
+        tool_call = message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+        sql = args.get("sql", "")
+        queries_run.append(sql)
+
+        result = run_sql_query(sql)
+
+        messages.append(message)  # the assistant's tool-call request
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(result),
+        })
+
+    # Loop cap hit without a final answer — return whatever the last
+    # tool result was, rather than silently failing.
+    state["explanation"] = (
+        "I ran several queries but couldn't fully resolve this within the "
+        "query limit. You may want to rephrase or narrow the question."
+    )
+    state["found"] = False
+    state["evidence"] = "; ".join(queries_run)
+    return state
 
 def off_topic_node(state: GraphState) -> GraphState:
     state["explanation"] = "I can only answer questions about Balaji Pharma's dashboard data or business definitions."
@@ -308,6 +450,8 @@ def route_after_classify(state: GraphState) -> str:
         return "rag_node"
     if state["route_decision"] == "both":
         return "both_node"
+    if state["route_decision"] == "sql_agent":
+        return "sql_agent_node"
     return "live_node"
 
 
@@ -327,6 +471,7 @@ def route_after_live(state: GraphState) -> str:
 
 graph = StateGraph(GraphState)
 
+graph.add_node("sql_agent_node", sql_agent_node)
 graph.add_node("classify", classify_node)
 graph.add_node("rag_node", rag_node)
 graph.add_node("live_node", live_node)
@@ -346,6 +491,7 @@ graph.add_conditional_edges(
         "rag_node": "rag_node",
         "live_node": "live_node",
         "both_node": "both_node",
+        "sql_agent_node": "sql_agent_node",
         "off_topic_node": "off_topic_node",
     },
 )
@@ -373,6 +519,7 @@ graph.add_edge("off_topic_node", "update_history_node")
 graph.add_edge("answer_node", "update_history_node")
 graph.add_edge("weak_fallback_node", "update_history_node")
 graph.add_edge("live_weak_fallback_node", "update_history_node")
+graph.add_edge("sql_agent_node", "update_history_node")
 graph.add_edge("update_history_node", END)
 
 compiled_graph = graph.compile(checkpointer=MemorySaver())
@@ -414,5 +561,4 @@ def run_agent(question: str, thread_id: str) -> dict:
 
 
 if __name__ == "__main__":
-    result = run_agent("How is the company performing?", thread_id="test-both-1")
-    print(result)
+    print(get_schema_summary())
