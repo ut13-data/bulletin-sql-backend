@@ -25,6 +25,7 @@ class GraphState(TypedDict):
     evidence: str
     recommendation: str
     turn_history: list
+    chart: dict | None
 
 
 def build_history_context(state: GraphState) -> str:
@@ -112,6 +113,145 @@ SQL_TOOL_SCHEMA = [
     }
 ]
 
+CHART_TOOL_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sql_query",
+            "description": "Run a read-only SQL SELECT query to get the data needed for the chart.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "A single valid SQLite SELECT query."}
+                },
+                "required": ["sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            # This tool has no real backend action. Its only job is to force
+            # the model to hand back its final answer in a fixed JSON shape,
+            # instead of writing free-form prose, so the frontend always
+            # knows exactly what fields to expect, whatever chart type
+            # the model chose.
+            "name": "submit_chart",
+            "description": "Submit the final chart once you have the data needed to build it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "style": {"type": "string", "enum": ["line", "bar", "scatter"]},
+                    "title": {"type": "string"},
+                    "x_axis_data": {"type": "array", "items": {"type": "string"}},
+                    "series": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "values": {"type": "array", "items": {"type": "number"}},
+                            },
+                            "required": ["name", "values"],
+                        },
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "1-2 sentence plain-text explanation of what the chart shows.",
+                    },
+                },
+                "required": ["style", "title", "x_axis_data", "series", "summary"],
+            },
+        },
+    },
+]
+
+
+def get_chart_agent_answer(question: str, history_context: str) -> dict:
+    schema = get_schema_summary()
+
+    system_prompt = (
+        f"You are a data visualization analyst for Balaji Pharma. First use "
+        f"run_sql_query to get the data needed, then call submit_chart with the "
+        f"result. Only SELECT queries work. Here is the COMPLETE database "
+        f"schema — these are the ONLY tables and columns that exist:\n\n{schema}\n\n"
+        f"Choose the chart style (line/bar/scatter) that best fits the question "
+        f"and data shape. Always call submit_chart as your final step, never "
+        f"answer in plain text."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{history_context}Question: {question}"},
+    ]
+
+    queries_run = []
+
+    for _ in range(MAX_SQL_LOOPS):
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=CHART_TOOL_SCHEMA,
+            temperature=0,
+            max_tokens=800,
+            reasoning_effort="low",
+        )
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            # Model didn't call a tool at all — treat as failure, we always
+            # need a real chart, not stray prose.
+            return {
+                "explanation": "I couldn't build a chart for that question.",
+                "found": False,
+                "evidence": "; ".join(queries_run),
+                "chart": None,
+            }
+
+        tool_call = message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+
+        if tool_call.function.name == "submit_chart":
+            # This is the terminal case — the model decided it's done.
+            return {
+                "explanation": args.get("summary", ""),
+                "found": True,
+                "evidence": "; ".join(queries_run),
+                "chart": {
+                    "style": args.get("style"),
+                    "title": args.get("title"),
+                    "x_axis_data": args.get("x_axis_data"),
+                    "series": args.get("series"),
+                },
+            }
+
+        # Otherwise it called run_sql_query — same loop pattern as sql_agent_node.
+        sql = args.get("sql", "")
+        queries_run.append(sql)
+        result = run_sql_query(sql)
+
+        messages.append(message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(result),
+        })
+
+    return {
+        "explanation": "I gathered data but couldn't finish building the chart within the query limit.",
+        "found": False,
+        "evidence": "; ".join(queries_run),
+        "chart": None,
+    }
+
+
+def chart_agent_node(state: GraphState) -> GraphState:
+    result = get_chart_agent_answer(state["question"], build_history_context(state))
+    state["explanation"] = result["explanation"]
+    state["found"] = result["found"]
+    state["evidence"] = result["evidence"]
+    state["chart"] = result["chart"]
+    return state
 
 def get_sql_agent_answer(question: str, history_context: str) -> dict:
     schema = get_schema_summary()
@@ -243,8 +383,10 @@ def classify_node(state: GraphState) -> GraphState:
         "— revenue, margin, inventory, turnover, rankings, comparisons across "
         "distributors/suppliers/customers, any metric or KPI, or a follow-up on "
         "one), \"rag\" (definitions, processes, DB structure), \"both\" (broad "
-        "question needing real numbers AND business context), \"off-topic\" "
-        "(unrelated, no link to prior questions).\n"
+        "question needing real numbers AND business context), \"chart_agent\" "
+        "(explicitly asks to see/show/plot/graph/visualize data, or compares "
+        "trends over time/categories in a way clearly meant to be looked at), "
+        "\"off-topic\" (unrelated, no link to prior questions).\n"
         "IMPORTANT: a vague follow-up (\"what should we do about this\", \"how "
         "can we fix it\") inherits the PREVIOUS answer's category, not a "
         "default. If the previous question was sql_agent, the follow-up is "
@@ -252,9 +394,9 @@ def classify_node(state: GraphState) -> GraphState:
         "Examples: \"What is my margin?\"->sql_agent | \"Why is margin "
         "falling?\"->sql_agent | \"What does DistributorID represent?\"->rag | "
         "\"How is the company performing?\"->both | \"Which 3 distributors had "
-        "the highest revenue?\"->sql_agent | \"Which supplier has the worst "
-        "on-time delivery?\"->sql_agent | \"What can we do about this vendor?\" "
-        "(previous answer was about a specific supplier)->sql_agent\n"
+        "the highest revenue?\"->sql_agent | \"Show me revenue by quarter\"-> "
+        "chart_agent | \"Plot inventory turnover by category\"->chart_agent | "
+        "\"Visualize margin trends over the year\"->chart_agent\n"
         "One word only.\n\n"
         f"Question: {state['question']}"
     )
@@ -269,6 +411,8 @@ def classify_node(state: GraphState) -> GraphState:
 
     if "off-topic" in raw:
         label = "off-topic"
+    elif "chart_agent" in raw:
+        label = "chart_agent"
     elif "sql_agent" in raw:
         label = "sql_agent"
     elif "both" in raw:
@@ -375,6 +519,8 @@ def route_after_classify(state: GraphState) -> str:
         return "rag_node"
     if state["route_decision"] == "both":
         return "both_node"
+    if state["route_decision"] == "chart_agent":
+        return "chart_agent_node"
     return "sql_agent_node"
 
 
@@ -392,6 +538,7 @@ graph.add_node("off_topic_node", off_topic_node)
 graph.add_node("answer_node", answer_node)
 graph.add_node("weak_fallback_node", weak_fallback_node)
 graph.add_node("update_history_node", update_history_node)
+graph.add_node("chart_agent_node", chart_agent_node)
 
 graph.add_edge(START, "classify")
 
@@ -402,6 +549,7 @@ graph.add_conditional_edges(
         "rag_node": "rag_node",
         "sql_agent_node": "sql_agent_node",
         "both_node": "both_node",
+        "chart_agent_node": "chart_agent_node",
         "off_topic_node": "off_topic_node",
     },
 )
@@ -420,6 +568,7 @@ graph.add_edge("both_node", "update_history_node")
 graph.add_edge("off_topic_node", "update_history_node")
 graph.add_edge("answer_node", "update_history_node")
 graph.add_edge("weak_fallback_node", "update_history_node")
+graph.add_edge("chart_agent_node", "update_history_node")
 graph.add_edge("update_history_node", END)
 
 compiled_graph = graph.compile(checkpointer=MemorySaver())
@@ -457,9 +606,10 @@ def run_agent(question: str, thread_id: str) -> dict:
         "evidence": "",
         "recommendation": "",
         "turn_history": turn_history,
+        "chart": None,
     }, config=config)
 
 
 if __name__ == "__main__":
-    result = run_agent("How is the revenue?", thread_id="test-thread-1")
-    print(result)
+     result = get_chart_agent_answer("Show me revenue by quarter", "")
+     print(result)
