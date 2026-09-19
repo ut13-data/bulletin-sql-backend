@@ -1,61 +1,18 @@
 import json
+import os
+import sqlite3
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from main import (
-    get_vectorstore,
-    SIMILARITY_DISTANCE_THRESHOLD,
-    client,
-    get_connection,
-    get_revenue_data,
-    get_gross_margin_data,
-    get_inventory_turnover_data,
-    get_dio_data,
-)
+from main import get_vectorstore, SIMILARITY_DISTANCE_THRESHOLD, client
 
 MODEL = "openai/gpt-oss-120b"
 MAX_TURNS = 5
-
-
-
-SQL_TOOL_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "run_sql_query",
-            "description": "Run a read-only SQL SELECT query against the Balaji Pharma database to answer questions not covered by the standard dashboards (revenue, gross margin, inventory turnover, DIO).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "A single valid SQLite SELECT query."
-                    }
-                },
-                "required": ["sql"]
-            }
-        }
-    }
-]
-
-STRUCTURED_SYSTEM_PROMPT = (
-    "You are a business intelligence assistant for Balaji Pharma, an Ayurvedic "
-    "pharmaceutical distribution company. You answer questions using ONLY the data "
-    "provided in the prompt. Never invent numbers, table names, column names, SQL "
-    "queries, or database structure that are not explicitly present in the provided "
-    "data. If the data doesn't contain enough detail to fully explain a root cause, "
-    "say so explicitly rather than speculating with fabricated technical specifics or "
-    "illustrative examples. Respond ONLY with a JSON object in this exact shape, with "
-    "no markdown formatting, no backticks, no preamble:\n"
-    "{\n"
-    '  "explanation": "string, 2-4 sentences directly answering the question using specific numbers from the data",\n'
-    '  "evidence": "string, optional, specific supporting figures if useful",\n'
-    '  "recommendation": "string, optional, a concrete suggested action if relevant",\n'
-    '  "confidence": "string, optional, one of: \'High - based on complete data\', \'Moderate - based on partial data\', \'Low - limited data available\'"\n'
-    "}"
-)
+MAX_SQL_LOOPS = 3
+DB_PATH = os.path.abspath("bulletin.db")
+MAX_ROWS = 200
 
 
 class GraphState(TypedDict):
@@ -87,31 +44,24 @@ def format_sources(sources: list) -> str:
     for s in sources:
         label = s.get("subsection") or s.get("section") or ""
         lines.append(f"{s['document']} — {label}" if label else s["document"])
-    return "; ".join(dict.fromkeys(lines))  # dedupes while keeping order
+    return "; ".join(dict.fromkeys(lines))
 
-import os
-import sqlite3
 
-DB_PATH = os.path.abspath("bulletin.db")
-MAX_ROWS = 200
+# ============================================================
+# SQL tool: read-only, SELECT-only, row-capped
+# ============================================================
 
 def run_sql_query(sql: str) -> dict:
-    # Step 1: reject anything that isn't a SELECT, before touching the DB at all.
     cleaned = sql.strip()
     if not cleaned.lower().startswith("select"):
         return {"error": "Only SELECT queries are allowed."}
 
     try:
-        # Step 2: true read-only connection via SQLite's URI mode.
-        # mode=ro means even a successful bypass of the check above
-        # would still fail at the database driver level, not just be "asked nicely."
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(cleaned)
 
-        # Step 3: hard row cap, so one broad query can't flood the prompt
-        # with tens of thousands of rows.
         rows = cursor.fetchmany(MAX_ROWS)
         columns = [description[0] for description in cursor.description]
         result = [dict(zip(columns, row)) for row in rows]
@@ -122,12 +72,16 @@ def run_sql_query(sql: str) -> dict:
     except sqlite3.Error as e:
         return {"error": f"SQL error: {str(e)}"}
 
+
 def get_schema_summary() -> str:
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     cursor = conn.cursor()
+
     EXCLUDED_TABLES = {"fact_procurement_transactions.csv"}
+
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = [row[0] for row in cursor.fetchall() if row[0] not in EXCLUDED_TABLES]
+
     lines = []
     for table in tables:
         cursor.execute(f"PRAGMA table_info([{table}])")
@@ -138,54 +92,95 @@ def get_schema_summary() -> str:
     return "\n".join(lines)
 
 
-def classify_node(state: GraphState) -> GraphState:
-    history_context = build_history_context(state)
+SQL_TOOL_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sql_query",
+            "description": "Run a read-only SQL SELECT query against the Balaji Pharma database to answer questions about revenue, margin, inventory, suppliers, distributors, or any other business data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "A single valid SQLite SELECT query."
+                    }
+                },
+                "required": ["sql"]
+            }
+        }
+    }
+]
 
-    classify_prompt = (
-        f"{history_context}"
-       "If the question is vague (\"it\", \"that\", \"how about\", \"what should "
-        "I do\"), mentally rewrite it using the previous Q/A above before "
-        "classifying. E.g. prev=\"why is margin falling\", now=\"how about it\" -> "
-        "treat as \"how about margin falling\".\n"
-        "Classify into one word: \"live\" (revenue/margin/inventory/turnover/any "
-        "KPI, or a follow-up on one, covered by the standard dashboards), \"rag\" "
-        "(definitions, processes, DB structure), \"both\" (broad question needing "
-        "live + business context), \"sql_agent\" (asks something specific NOT "
-        "covered by the standard dashboards — rankings, comparisons across "
-        "distributors/suppliers/customers, specific SKU-level or time-period "
-        "breakdowns, anything needing a custom database query), \"off-topic\" "
-        "(unrelated, no link to prior questions).\n"
-        "Examples: \"What is my margin?\"->live | \"Why is margin falling?\"->live "
-        "| \"What does DistributorID represent?\"->rag | \"How is the company "
-        "performing?\"->both | \"Which 3 distributors had the highest revenue?\"->sql_agent "
-        "| \"Which supplier has the worst on-time delivery?\"->sql_agent\n"
-        "One word only.\n\n"
-        f"Question: {state['question']}"
+
+def get_sql_agent_answer(question: str, history_context: str) -> dict:
+    schema = get_schema_summary()
+
+    system_prompt = (
+        f"You are a SQL analyst for Balaji Pharma. Use the run_sql_query tool to "
+        f"answer the question. Only SELECT queries work. Here is the COMPLETE "
+        f"database schema — these are the ONLY tables and columns that exist:\n\n"
+        f"{schema}\n\n"
+        f"Never reference, suggest, or speculate about a table or column that is "
+        f"not listed above, even hedged (e.g. do not say \"if you have a "
+        f"delivery_log table\"). If answering the question well would require "
+        f"data that doesn't exist in this schema, say so plainly instead of "
+        f"guessing what might exist.\n"
+        f"After you have enough information, respond with a final plain-text "
+        f"answer, 2-4 sentences, citing real numbers from the query results. "
+        f"Do not call the tool again once you have enough to answer."
     )
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": classify_prompt}],
-        temperature=0,
-        max_tokens=100,
-        reasoning_effort="low",
-    )
-    raw = response.choices[0].message.content.strip().lower()
 
-    if "off-topic" in raw:
-        label = "off-topic"
-    elif "sql_agent" in raw:
-        label = "sql_agent"
-    elif "both" in raw:
-        label = "both"
-    elif "live" in raw:
-        label = "live"
-    elif "rag" in raw:
-        label = "rag"
-    else:
-        label = "live"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{history_context}Question: {question}"},
+    ]
 
-    state["route_decision"] = label
-    return state
+    queries_run = []
+
+    for _ in range(MAX_SQL_LOOPS):
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            tools=SQL_TOOL_SCHEMA,
+            temperature=0,
+            max_tokens=800,
+            reasoning_effort="low",
+        )
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            explanation = message.content or "I don't know."
+            return {
+                "explanation": explanation,
+                "found": bool(message.content),
+                "evidence": "; ".join(queries_run),
+                "recommendation": "",
+            }
+
+        tool_call = message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+        sql = args.get("sql", "")
+        queries_run.append(sql)
+
+        result = run_sql_query(sql)
+
+        messages.append(message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(result),
+        })
+
+    return {
+        "explanation": (
+            "I ran several queries but couldn't fully resolve this within the "
+            "query limit. You may want to rephrase or narrow the question."
+        ),
+        "found": False,
+        "evidence": "; ".join(queries_run),
+        "recommendation": "",
+    }
 
 
 def get_rag_answer(question: str, history_context: str) -> dict:
@@ -231,48 +226,60 @@ def get_rag_answer(question: str, history_context: str) -> dict:
     return {"explanation": answer_text, "found": found, "sources": sources}
 
 
-def get_live_answer(question: str, history_context: str) -> dict:
-    conn = get_connection()
-    dashboard_data = {
-        "revenue": get_revenue_data(conn),
-        "grossMargin": get_gross_margin_data(conn),
-        "inventoryTurnover": get_inventory_turnover_data(conn),
-        "dio": get_dio_data(conn),
-    }
-    conn.close()
+# ============================================================
+# Nodes
+# ============================================================
 
-    user_prompt = (
+def classify_node(state: GraphState) -> GraphState:
+    history_context = build_history_context(state)
+
+    classify_prompt = (
         f"{history_context}"
-        f"Dashboard data:\n\n{json.dumps(dashboard_data)}\n\n"
-        f"Question: {question}"
+        "If the question is vague (\"it\", \"that\", \"how about\", \"what should "
+        "I do\"), mentally rewrite it using the previous Q/A above before "
+        "classifying. E.g. prev=\"why is margin falling\", now=\"how about it\" -> "
+        "treat as \"how about margin falling\".\n"
+        "Classify into one word: \"sql_agent\" (needs real Balaji Pharma numbers "
+        "— revenue, margin, inventory, turnover, rankings, comparisons across "
+        "distributors/suppliers/customers, any metric or KPI, or a follow-up on "
+        "one), \"rag\" (definitions, processes, DB structure), \"both\" (broad "
+        "question needing real numbers AND business context), \"off-topic\" "
+        "(unrelated, no link to prior questions).\n"
+        "IMPORTANT: a vague follow-up (\"what should we do about this\", \"how "
+        "can we fix it\") inherits the PREVIOUS answer's category, not a "
+        "default. If the previous question was sql_agent, the follow-up is "
+        "sql_agent too, unless it's clearly a different topic.\n"
+        "Examples: \"What is my margin?\"->sql_agent | \"Why is margin "
+        "falling?\"->sql_agent | \"What does DistributorID represent?\"->rag | "
+        "\"How is the company performing?\"->both | \"Which 3 distributors had "
+        "the highest revenue?\"->sql_agent | \"Which supplier has the worst "
+        "on-time delivery?\"->sql_agent | \"What can we do about this vendor?\" "
+        "(previous answer was about a specific supplier)->sql_agent\n"
+        "One word only.\n\n"
+        f"Question: {state['question']}"
     )
-
     response = client.chat.completions.create(
         model=MODEL,
-        messages=[
-            {"role": "system", "content": STRUCTURED_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        max_tokens=800,
+        messages=[{"role": "user", "content": classify_prompt}],
+        temperature=0,
+        max_tokens=100,
         reasoning_effort="low",
-        response_format={"type": "json_object"},
     )
+    raw = response.choices[0].message.content.strip().lower()
 
-    content = response.choices[0].message.content
-    try:
-        parsed = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
-        parsed = {"explanation": content}
+    if "off-topic" in raw:
+        label = "off-topic"
+    elif "sql_agent" in raw:
+        label = "sql_agent"
+    elif "both" in raw:
+        label = "both"
+    elif "rag" in raw:
+        label = "rag"
+    else:
+        label = "sql_agent"  # ambiguous-question fallback — dashboard app, data is more often right
 
-    explanation = parsed.get("explanation", "")
-    return {
-        "explanation": explanation,
-        "evidence": parsed.get("evidence", ""),
-        "recommendation": parsed.get("recommendation", ""),
-        "confidence": parsed.get("confidence", ""),
-        "found": bool(explanation),
-    }
+    state["route_decision"] = label
+    return state
 
 
 def rag_node(state: GraphState) -> GraphState:
@@ -283,46 +290,41 @@ def rag_node(state: GraphState) -> GraphState:
     return state
 
 
-def live_node(state: GraphState) -> GraphState:
-    result = get_live_answer(state["question"], build_history_context(state))
+def sql_agent_node(state: GraphState) -> GraphState:
+    result = get_sql_agent_answer(state["question"], build_history_context(state))
     state["explanation"] = result["explanation"]
-    state["evidence"] = result["evidence"]
-    state["recommendation"] = result["recommendation"]
-    state["confidence"] = result["confidence"]
     state["found"] = result["found"]
+    state["evidence"] = result["evidence"]
+    state["recommendation"] = result.get("recommendation", "")
     return state
 
 
 def both_node(state: GraphState) -> GraphState:
     history_context = build_history_context(state)
+    sql_result = get_sql_agent_answer(state["question"], history_context)
     rag_result = get_rag_answer(state["question"], history_context)
-    live_result = get_live_answer(state["question"], history_context)
 
-    live_explanation_lower = live_result["explanation"].lower()
-    live_has_real_answer = bool(live_result["explanation"]) and (
-        "does not contain" not in live_explanation_lower
-        and "cannot be answered" not in live_explanation_lower
-    )
+    sql_has_real_answer = sql_result["found"]
     rag_has_real_answer = rag_result["found"]
 
     explanation_parts = []
-    if live_has_real_answer:
-        explanation_parts.append(f"**From live dashboard data:** {live_result['explanation']}")
+    if sql_has_real_answer:
+        explanation_parts.append(f"**From live database query:** {sql_result['explanation']}")
     if rag_has_real_answer:
         explanation_parts.append(f"**From business documentation:** {rag_result['explanation']}")
 
-    if not live_has_real_answer and not rag_has_real_answer:
+    if not sql_has_real_answer and not rag_has_real_answer:
         confidence = "Low - not covered by available data or documentation"
-    elif live_has_real_answer and rag_has_real_answer:
-        confidence = "Moderate - combined live data and business context, verify before acting"
-    elif live_has_real_answer:
-        confidence = live_result.get("confidence") or "Moderate - based on live data only"
+    elif sql_has_real_answer and rag_has_real_answer:
+        confidence = "Moderate - combined query results and business context, verify before acting"
+    elif sql_has_real_answer:
+        confidence = "Moderate - based on database query results only"
     else:
         confidence = "Moderate - based on business documentation only"
 
     evidence_parts = []
-    if live_result.get("evidence"):
-        evidence_parts.append(live_result["evidence"])
+    if sql_result.get("evidence"):
+        evidence_parts.append(f"Query: {sql_result['evidence']}")
     if rag_has_real_answer:
         cited = format_sources(rag_result["sources"])
         if cited:
@@ -330,97 +332,17 @@ def both_node(state: GraphState) -> GraphState:
 
     state["explanation"] = "\n\n".join(explanation_parts) or "I don't know."
     state["evidence"] = " | ".join(evidence_parts)
-    state["recommendation"] = live_result.get("recommendation", "")
+    state["recommendation"] = sql_result.get("recommendation", "")
     state["confidence"] = confidence
-    state["found"] = live_has_real_answer or rag_has_real_answer
+    state["found"] = sql_has_real_answer or rag_has_real_answer
     state["sources"] = rag_result["sources"] if rag_has_real_answer else []
     return state
 
-MAX_SQL_LOOPS = 3
-
-def sql_agent_node(state: GraphState) -> GraphState:
-    schema = get_schema_summary()
-    history_context = build_history_context(state)
-
-    system_prompt = (
-        f"You are a SQL analyst for Balaji Pharma. Use the run_sql_query tool to "
-        f"answer the question. Only SELECT queries work. Here is the COMPLETE "
-        f"database schema — these are the ONLY tables and columns that exist:\n\n"
-        f"{schema}\n\n"
-        f"Never reference, suggest, or speculate about a table or column that is "
-        f"not listed above, even hedged (e.g. do not say \"if you have a "
-        f"delivery_log table\"). If answering the question well would require "
-        f"data that doesn't exist in this schema, say so plainly instead of "
-        f"guessing what might exist.\n"
-        f"After you have enough information, respond with a final plain-text "
-        f"answer, 2-4 sentences, citing real numbers from the query results. "
-        f"Do not call the tool again once you have enough to answer."
-    )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{history_context}Question: {state['question']}"},
-    ]
-
-    queries_run = []
-
-    for _ in range(MAX_SQL_LOOPS):
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=SQL_TOOL_SCHEMA,
-            temperature=0,
-            max_tokens=800,
-            reasoning_effort="low",
-        )
-        message = response.choices[0].message
-
-        if not message.tool_calls:
-            # Model decided it has enough — this is the final answer.
-            state["explanation"] = message.content or "I don't know."
-            state["found"] = bool(message.content)
-            state["evidence"] = "; ".join(queries_run) if queries_run else ""
-            return state
-
-        # Model wants to run a query — execute it for real, feed result back.
-        tool_call = message.tool_calls[0]
-        args = json.loads(tool_call.function.arguments)
-        sql = args.get("sql", "")
-        queries_run.append(sql)
-
-        result = run_sql_query(sql)
-
-        messages.append(message)  # the assistant's tool-call request
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": json.dumps(result),
-        })
-
-    # Loop cap hit without a final answer — return whatever the last
-    # tool result was, rather than silently failing.
-    state["explanation"] = (
-        "I ran several queries but couldn't fully resolve this within the "
-        "query limit. You may want to rephrase or narrow the question."
-    )
-    state["found"] = False
-    state["evidence"] = "; ".join(queries_run)
-    return state
 
 def off_topic_node(state: GraphState) -> GraphState:
     state["explanation"] = "I can only answer questions about Balaji Pharma's dashboard data or business definitions."
     state["found"] = False
     state["confidence"] = "N/A"
-    return state
-
-
-def live_weak_fallback_node(state: GraphState) -> GraphState:
-    if not state.get("explanation"):
-        state["explanation"] = (
-            "The live dashboard data doesn't contain enough detail to confidently "
-            "answer that question."
-        )
-    state["confidence"] = state.get("confidence") or "Low - insufficient live data"
     return state
 
 
@@ -432,7 +354,10 @@ def weak_fallback_node(state: GraphState) -> GraphState:
 
 def answer_node(state: GraphState) -> GraphState:
     if not state["confidence"]:
-        state["confidence"] = "Moderate - based on business documentation"
+        if state["route_decision"] == "sql_agent":
+            state["confidence"] = "Moderate - based on database query results"
+        else:
+            state["confidence"] = "Moderate - based on business documentation"
     return state
 
 
@@ -450,36 +375,22 @@ def route_after_classify(state: GraphState) -> str:
         return "rag_node"
     if state["route_decision"] == "both":
         return "both_node"
-    if state["route_decision"] == "sql_agent":
-        return "sql_agent_node"
-    return "live_node"
+    return "sql_agent_node"
 
 
 def route_after_rag(state: GraphState) -> str:
     return "answer_node" if state["found"] else "weak_fallback_node"
 
 
-def route_after_live(state: GraphState) -> str:
-    confidence = state.get("confidence", "")
-    is_weak = (
-        not state.get("explanation")
-        or not state.get("found", False)
-        or confidence.startswith("Low")
-    )
-    return "live_weak_fallback_node" if is_weak else "answer_node"
-
-
 graph = StateGraph(GraphState)
 
-graph.add_node("sql_agent_node", sql_agent_node)
 graph.add_node("classify", classify_node)
 graph.add_node("rag_node", rag_node)
-graph.add_node("live_node", live_node)
+graph.add_node("sql_agent_node", sql_agent_node)
 graph.add_node("both_node", both_node)
 graph.add_node("off_topic_node", off_topic_node)
 graph.add_node("answer_node", answer_node)
 graph.add_node("weak_fallback_node", weak_fallback_node)
-graph.add_node("live_weak_fallback_node", live_weak_fallback_node)
 graph.add_node("update_history_node", update_history_node)
 
 graph.add_edge(START, "classify")
@@ -489,9 +400,8 @@ graph.add_conditional_edges(
     route_after_classify,
     {
         "rag_node": "rag_node",
-        "live_node": "live_node",
-        "both_node": "both_node",
         "sql_agent_node": "sql_agent_node",
+        "both_node": "both_node",
         "off_topic_node": "off_topic_node",
     },
 )
@@ -505,21 +415,11 @@ graph.add_conditional_edges(
     },
 )
 
-graph.add_conditional_edges(
-    "live_node",
-    route_after_live,
-    {
-        "answer_node": "answer_node",
-        "live_weak_fallback_node": "live_weak_fallback_node",
-    },
-)
-
+graph.add_edge("sql_agent_node", "answer_node")
 graph.add_edge("both_node", "update_history_node")
 graph.add_edge("off_topic_node", "update_history_node")
 graph.add_edge("answer_node", "update_history_node")
 graph.add_edge("weak_fallback_node", "update_history_node")
-graph.add_edge("live_weak_fallback_node", "update_history_node")
-graph.add_edge("sql_agent_node", "update_history_node")
 graph.add_edge("update_history_node", END)
 
 compiled_graph = graph.compile(checkpointer=MemorySaver())
@@ -561,4 +461,5 @@ def run_agent(question: str, thread_id: str) -> dict:
 
 
 if __name__ == "__main__":
-    print(get_schema_summary())
+    result = run_agent("How is the revenue?", thread_id="test-thread-1")
+    print(result)
