@@ -11,6 +11,7 @@ from main import get_vectorstore, SIMILARITY_DISTANCE_THRESHOLD, client
 MODEL = "openai/gpt-oss-120b"
 MAX_TURNS = 5
 MAX_SQL_LOOPS = 3
+MAX_CHART_LOOPS = 5
 DB_PATH = os.path.abspath("bulletin.db")
 MAX_ROWS = 200
 
@@ -194,13 +195,14 @@ def get_chart_agent_answer(question: str, history_context: str) -> dict:
 
     queries_run = []
 
-    for _ in range(MAX_SQL_LOOPS):
+    for _ in range(MAX_CHART_LOOPS):
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
             tools=CHART_TOOL_SCHEMA,
+            tool_choice="required",
             temperature=0,
-            max_tokens=800,
+            max_tokens=1200,
             reasoning_effort="low",
         )
         message = response.choices[0].message
@@ -208,6 +210,7 @@ def get_chart_agent_answer(question: str, history_context: str) -> dict:
         if not message.tool_calls:
             # Model didn't call a tool at all — treat as failure, we always
             # need a real chart, not stray prose.
+            print("DEBUG: model responded with plain text instead of submit_chart:", message.content)
             return {
                 "explanation": "I couldn't build a chart for that question.",
                 "found": False,
