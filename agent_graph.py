@@ -131,11 +131,6 @@ CHART_TOOL_SCHEMA = [
     {
         "type": "function",
         "function": {
-            # This tool has no real backend action. Its only job is to force
-            # the model to hand back its final answer in a fixed JSON shape,
-            # instead of writing free-form prose, so the frontend always
-            # knows exactly what fields to expect, whatever chart type
-            # the model chose.
             "name": "submit_chart",
             "description": "Submit the final chart once you have the data needed to build it.",
             "parameters": {
@@ -143,13 +138,21 @@ CHART_TOOL_SCHEMA = [
                 "properties": {
                     "style": {"type": "string", "enum": ["line", "bar", "scatter"]},
                     "title": {"type": "string"},
-                    "x_axis_data": {"type": "array", "items": {"type": "string"}},
+                    "x_axis_data": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The labels along the x-axis — e.g. categories, quarters, or product names being compared. This is ALWAYS the group/category being compared, never a metric name.",
+                    },
                     "series": {
                         "type": "array",
+                        "description": "One entry per METRIC being measured (e.g. 'Revenue', 'Discount %'), not one entry per category. Each series' 'values' array must have exactly one number per x_axis_data label, in the same order.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string"},
+                                "name": {
+                                    "type": "string",
+                                    "description": "The metric name, e.g. 'Discount %', not a category name.",
+                                },
                                 "values": {"type": "array", "items": {"type": "number"}},
                             },
                             "required": ["name", "values"],
@@ -166,7 +169,6 @@ CHART_TOOL_SCHEMA = [
     },
 ]
 
-
 def get_chart_agent_answer(question: str, history_context: str) -> dict:
     schema = get_schema_summary()
 
@@ -177,7 +179,12 @@ def get_chart_agent_answer(question: str, history_context: str) -> dict:
         f"schema — these are the ONLY tables and columns that exist:\n\n{schema}\n\n"
         f"Choose the chart style (line/bar/scatter) that best fits the question "
         f"and data shape. Always call submit_chart as your final step, never "
-        f"answer in plain text."
+        f"answer in plain text.\n\n"
+        f"Example: comparing discount % across 2 categories (Classical, Syrup) "
+        f"with values 0.87 and 0.80 -> x_axis_data=[\"Classical\", \"Syrup\"], "
+        f"series=[{{\"name\": \"Discount %\", \"values\": [0.87, 0.80]}}]. "
+        f"The categories go on x_axis_data, the metric name and its values go "
+        f"in ONE series entry, not one series per category."
     )
 
     messages = [
