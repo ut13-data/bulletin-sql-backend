@@ -89,15 +89,16 @@ def generate_recommendation(question: str, explanation: str) -> str:
 
     prompt = (
         f"Based on this answer to a business question, write ONE short, "
-        f"concrete, actionable recommendation (max 20 words). If genuinely no "
-        f"action is warranted, respond with exactly: NONE\n\n"
+        f"concrete, actionable recommendation as a COMPLETE sentence (max 20 "
+        f"words, never cut off mid-thought). If genuinely no action is "
+        f"warranted, respond with exactly: NONE\n\n"
         f"Question: {question}\nAnswer: {explanation}"
     )
     call_result = safe_groq_call(
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=60,
+        max_tokens=100,
         reasoning_effort="low",
     )
     if not call_result["ok"]:
@@ -167,6 +168,17 @@ DATE_FORMAT_NOTE = (
     "'Apr-2022'), do not assume it matches the format above.\n\n"
 )
 
+TURNOVER_FORMULA_NOTE = (
+    "INVENTORY TURNOVER: this schema has no table linking monthly COGS "
+    "directly to inventory value, so use this established proxy formula: "
+    "Inventory Turnover = SUM(Sold) / AVG(ClosingStock), from "
+    "FactInventoryWeekly (join DimProduct for category/name, group by month "
+    "using substr(WeekEnd, 1, 7) if a monthly series is needed). Do NOT "
+    "refuse an inventory turnover question by claiming a COGS-linked table "
+    "is required — this proxy is the correct and only approach available "
+    "in this schema.\n\n"
+)
+
 SQL_TOOL_SCHEMA = [
     {
         "type": "function",
@@ -197,6 +209,7 @@ def get_sql_agent_answer(question: str, history_context: str) -> dict:
         f"database schema — these are the ONLY tables and columns that exist:\n\n"
         f"{schema}\n\n"
         f"{DATE_FORMAT_NOTE}"
+        f"{TURNOVER_FORMULA_NOTE}"
         f"Never reference, suggest, or speculate about a table or column that is "
         f"not listed above, even hedged (e.g. do not say \"if you have a "
         f"delivery_log table\"). If answering the question well would require "
@@ -284,7 +297,7 @@ def get_rag_answer(question: str, history_context: str) -> dict:
     ]
 
     if not relevant:
-        return {"explanation": "I don't know.", "found": False, "sources": [], "recommendation": ""}
+        return {"explanation": "I don't know.", "found": False, "sources": [], "recommendation": "", "evidence": ""}
 
     relevant = relevant[:3]
     context_text = "\n\n".join(doc.page_content for doc, _ in relevant)
@@ -303,7 +316,7 @@ def get_rag_answer(question: str, history_context: str) -> dict:
     )
 
     if not call_result["ok"]:
-        return {"explanation": "I ran into trouble answering that, please try again.", "found": False, "sources": [], "recommendation": ""}
+        return {"explanation": "I ran into trouble answering that, please try again.", "found": False, "sources": [], "recommendation": "", "evidence": ""}
 
     answer_text = call_result["response"].choices[0].message.content
 
@@ -350,9 +363,12 @@ def infer_series(data: list[dict], metric_hint: str | None = None) -> dict:
 
     value_col = None
     if metric_hint:
-        hint = metric_hint.lower()
+        # Normalize both sides — strip spaces/underscores so "inventory
+        # turnover" (planner hint) matches "InventoryTurnover" (SQL alias).
+        hint = metric_hint.lower().replace(" ", "").replace("_", "")
         for col in numeric_columns:
-            if hint in col.lower():
+            col_normalized = col.lower().replace(" ", "").replace("_", "")
+            if hint in col_normalized:
                 value_col = col
                 break
 
@@ -413,6 +429,7 @@ def get_chart_agent_answer(
             f"work. Here is the COMPLETE database schema — these are the ONLY tables "
             f"and columns that exist:\n\n{schema}\n\n"
             f"{DATE_FORMAT_NOTE}"
+            f"{TURNOVER_FORMULA_NOTE}"
             f"Once you have the data needed to answer the question, respond in plain "
             f"text summarizing the numbers you found. Do not call the tool again "
             f"once you have enough data."
@@ -575,7 +592,7 @@ def get_forecast_agent_answer(
             f"series of values (e.g. monthly revenue, ordered oldest to newest). "
             f"The most recent 12-18 periods is enough, you do NOT need the entire "
             f"history. Only SELECT queries work. Here is the COMPLETE database "
-            f"schema:\n\n{schema}\n\n{DATE_FORMAT_NOTE}"
+            f"schema:\n\n{schema}\n\n{DATE_FORMAT_NOTE}{TURNOVER_FORMULA_NOTE}"
             f"Once you have the ordered historical values, respond in plain text "
             f"listing them clearly, e.g. 'Jan 2024: 100, Feb 2024: 120'. Do not "
             f"call the tool again once you have enough data. Do not attempt to "
@@ -860,8 +877,27 @@ def agent_executor_node(state: GraphState) -> GraphState:
     input_data = None
     if "uses" in step:
         prior = state["step_results"].get(step["uses"])
-        if prior:
-            input_data = prior.get("data")
+        prior_data = prior.get("data") if prior else None
+
+        if prior_data:
+            input_data = prior_data
+        else:
+            # The linked step ran but produced no usable data — don't let
+            # this step silently fall back to its own ungrounded re-gather.
+            # Report the gap honestly, same rule as the SQL agent's own
+            # "say so plainly instead of guessing" instruction.
+            state["step_results"][step_index] = {
+                "explanation": (
+                    "The previous step didn't return usable data for this "
+                    "calculation, so I can't complete it."
+                ),
+                "found": False,
+                "evidence": "",
+                "recommendation": "",
+                "chart": None,
+            }
+            state["current_step"] = step_index + 1
+            return state
 
     if agent == "sql":
         result = get_sql_agent_answer(goal, history_context)
