@@ -922,6 +922,7 @@ def assemble_node(state: GraphState) -> GraphState:
 
         if result.get("evidence"):
             evidence_parts.append(result["evidence"])
+        if step["agent"] == "rag" and result.get("sources"):
             sources = result["sources"]
         if result.get("chart"):
             chart = result["chart"]
