@@ -1,7 +1,10 @@
 import json
 import os
 import sqlite3
+import re
+from pydantic import BaseModel, ValidationError
 from typing import TypedDict
+from main import HFAPIEmbeddings
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -19,6 +22,47 @@ MAX_FORECAST_LOOPS = 3
 MAX_PLAN_STEPS = 3
 DB_PATH = os.path.abspath("bulletin.db")
 MAX_ROWS = 200
+
+META_SIMILARITY_THRESHOLD = 0.3
+
+_embeddings_model = None
+_meta_example_embeddings = None
+
+def _get_embeddings_model():
+    global _embeddings_model
+    if _embeddings_model is None:
+        _embeddings_model = HFAPIEmbeddings(api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
+    return _embeddings_model
+
+def get_meta_example_embeddings():
+    global _meta_example_embeddings
+    if _meta_example_embeddings is None:
+        _meta_example_embeddings = _get_embeddings_model().embed_documents(META_EXAMPLES)
+    return _meta_example_embeddings
+
+def cosine_similarity(a, b):
+    a, b = np.array(a), np.array(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def is_meta_question(question: str) -> bool:
+    q_embedding = _get_embeddings_model().embed_query(question)
+    example_embeddings = get_meta_example_embeddings()
+    best_score = max(cosine_similarity(q_embedding, ex) for ex in example_embeddings)
+    print(f"DEBUG meta similarity: {best_score:.3f} for '{question}'")
+    return best_score >= META_SIMILARITY_THRESHOLD
+
+META_EXAMPLES = [
+    "summarize this conversation",
+    "give me a summary of what we discussed",
+    "what did we talk about",
+    "recap this chat",
+    "how many questions have I asked",
+    "what was my previous question",
+    "remind me what you said earlier",
+]
+
+
+
 
 
 class GraphState(TypedDict):
@@ -52,11 +96,54 @@ def safe_groq_call(**kwargs) -> dict:
 
 def safe_parse_tool_args(tool_call) -> dict:
     try:
-        return json.loads(tool_call.function.arguments)
-    except (TypeError, json.JSONDecodeError) as e:
+        return ToolArgs.model_validate(json.loads(tool_call.function.arguments)).model_dump()
+    except (TypeError, json.JSONDecodeError, ValidationError) as e:
         print(f"DEBUG: failed to parse tool arguments: {e}")
-        return {}
+        return {"sql": ""}
 
+    
+def safe_structured_call(messages, model, retry_note="Return ONLY valid JSON matching the required schema.", **groq_kwargs):
+    call_result = safe_groq_call(model=MODEL, messages=messages, response_format={"type": "json_object"}, **groq_kwargs)
+    if not call_result["ok"]:
+        return None, call_result["error"]
+
+    content = call_result["response"].choices[0].message.content
+    try:
+        return model.model_validate(json.loads(content)), None
+    except (json.JSONDecodeError, ValidationError) as e:
+        retry_messages = messages + [{"role": "user", "content": retry_note}]
+        retry_result = safe_groq_call(model=MODEL, messages=retry_messages, response_format={"type": "json_object"}, **groq_kwargs)
+        if not retry_result["ok"]:
+            return None, retry_result["error"]
+        try:
+            retry_content = retry_result["response"].choices[0].message.content
+            return model.model_validate(json.loads(retry_content)), None
+        except (json.JSONDecodeError, ValidationError) as e2:
+            return None, str(e2)
+
+class ToolArgs(BaseModel):
+    sql: str = ""
+
+class PlanStep(BaseModel):
+    agent: str
+    goal: str = ""
+    uses: int | None = None
+    metric_hint: str | None = None
+
+class PlannerOutput(BaseModel):
+    plan: list[PlanStep] = []
+    off_topic: bool = False
+
+class ForecastData(BaseModel):
+    labels: list[str]
+    values: list[float]
+
+class ChartData(BaseModel):
+    style: str
+    title: str
+    x_axis_data: list[str]
+    series: list[dict]
+    summary: str = ""
 
 def build_history_context(state: GraphState) -> str:
     history = state.get("turn_history", [])
@@ -76,6 +163,32 @@ def format_sources(sources: list) -> str:
         label = s.get("subsection") or s.get("section") or ""
         lines.append(f"{s['document']} — {label}" if label else s["document"])
     return "; ".join(dict.fromkeys(lines))
+
+META_EXAMPLES = [
+    "summarize this conversation",
+    "give me a summary of what we discussed",
+    "what did we talk about",
+    "recap this chat",
+    "how many questions have I asked",
+    "what was my previous question",
+    "remind me what you said earlier",
+]
+META_EXAMPLE_EMBEDDINGS = None  # populated lazily on first use
+
+def get_meta_example_embeddings():
+    global META_EXAMPLE_EMBEDDINGS
+    if META_EXAMPLE_EMBEDDINGS is None:
+        embeddings_client = get_vectorstore().embeddings  # reuse the same embeddings object FAISS already uses
+        META_EXAMPLE_EMBEDDINGS = embeddings_client.embed_documents(META_EXAMPLES)
+    return META_EXAMPLE_EMBEDDINGS
+
+def cosine_similarity(a, b):
+    a, b = np.array(a), np.array(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+META_SIMILARITY_THRESHOLD = 0.75  # start here, tune based on real testing
+
+
 
 
 # ============================================================
@@ -334,7 +447,7 @@ def get_rag_answer(question: str, history_context: str) -> dict:
     recommendation = generate_recommendation(question, answer_text) if found else ""
 
     cited = format_sources(sources)
-    evidence = f"Sources: {cited}" if cited else ""
+    evidence = f"Sources: {cited}" if (found and cited) else "No evidence found"
 
     return {"explanation": answer_text, "found": found, "sources": sources, "recommendation": recommendation, "evidence": evidence}
 
@@ -511,16 +624,11 @@ def get_chart_agent_answer(
         f"series=[{{\"name\": \"Discount %\", \"values\": [0.87, 0.80]}}]."
     )
 
-    chart_call = safe_groq_call(
-        model=MODEL,
-        messages=[{"role": "user", "content": chart_prompt}],
-        temperature=0,
-        max_tokens=800,
-        reasoning_effort="low",
-        response_format={"type": "json_object"},
+    chart_data, err = safe_structured_call(
+        [{"role": "user", "content": chart_prompt}],
+        ChartData, temperature=0, max_tokens=800, reasoning_effort="low",
     )
-
-    if not chart_call["ok"]:
+    if chart_data is None:
         return {
             "explanation": gathered_summary or "I gathered data but couldn't build a chart from it.",
             "found": bool(gathered_summary),
@@ -529,19 +637,7 @@ def get_chart_agent_answer(
             "chart": None,
         }
 
-    content = chart_call["response"].choices[0].message.content
-    try:
-        chart_data = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
-        return {
-            "explanation": gathered_summary or "I gathered data but couldn't build a chart from it.",
-            "found": bool(gathered_summary),
-            "evidence": evidence_note,
-            "recommendation": "",
-            "chart": None,
-        }
-
-    explanation = chart_data.get("summary", gathered_summary or "")
+    explanation = chart_data.summary or gathered_summary or ""
     recommendation = generate_recommendation(question, explanation)
 
     return {
@@ -550,13 +646,12 @@ def get_chart_agent_answer(
         "evidence": evidence_note,
         "recommendation": recommendation,
         "chart": {
-            "style": chart_data.get("style"),
-            "title": chart_data.get("title"),
-            "x_axis_data": chart_data.get("x_axis_data"),
-            "series": chart_data.get("series"),
+            "style": chart_data.style,
+            "title": chart_data.title,
+            "x_axis_data": chart_data.x_axis_data,
+            "series": chart_data.series,
         },
     }
-
 
 # ============================================================
 # Forecast agent: uses input_data (from a prior plan step) when
@@ -658,15 +753,12 @@ def get_forecast_agent_answer(
             f"both arrays the same length, ordered oldest to newest. No markdown, "
             f"no backticks."
         )
-        extract_call = safe_groq_call(
-            model=MODEL,
-            messages=[{"role": "user", "content": extract_prompt}],
-            temperature=0,
-            max_tokens=800,
-            response_format={"type": "json_object"},
+        parsed, err = safe_structured_call(
+            [{"role": "user", "content": extract_prompt}],
+            ForecastData, temperature=0, max_tokens=800,
         )
-
-        if not extract_call["ok"]:
+        if parsed is None or len(parsed.values) < 2 or len(parsed.values) != len(parsed.labels):
+            print(f"DEBUG: forecast extraction failed: {err}")
             return {
                 "explanation": gathered_summary,
                 "found": True,
@@ -675,22 +767,8 @@ def get_forecast_agent_answer(
                 "chart": None,
             }
 
-        try:
-            parsed = json.loads(extract_call["response"].choices[0].message.content)
-            values = [float(v) for v in parsed["values"]]
-            labels = [str(l) for l in parsed["labels"]]
-            if len(values) < 2 or len(values) != len(labels):
-                raise ValueError("insufficient or mismatched data")
-        except (TypeError, json.JSONDecodeError, KeyError, ValueError) as e:
-            print(f"DEBUG: forecast extraction failed: {e}")
-            return {
-                "explanation": gathered_summary,
-                "found": True,
-                "evidence": "; ".join(queries_run),
-                "recommendation": "",
-                "chart": None,
-            }
-
+        values = parsed.values
+        labels = parsed.labels
         evidence_note = "; ".join(queries_run)
 
     if len(values) < 2:
@@ -735,6 +813,7 @@ def get_forecast_agent_answer(
         "explanation": explanation,
         "found": True,
         "evidence": evidence_note,
+        "r_squared": r_squared,
         "recommendation": (
             "Treat this as a straight-line projection based on past patterns, "
             "not a guarantee — revisit it if any major business change occurs "
@@ -752,6 +831,101 @@ def get_forecast_agent_answer(
     }
 
 
+def get_scenario_agent_answer(
+    question: str,
+    history_context: str,
+    input_data: list | None = None,
+    metric_hint: str | None = None,
+) -> dict:
+    if input_data is not None:
+        inferred = infer_series(input_data, metric_hint)
+        if not inferred["ok"]:
+            return {"explanation": inferred["error"], "found": False, "evidence": "Reused data from a previous step.", "recommendation": "", "chart": None}
+        baseline = sum(inferred["values"]) if len(inferred["values"]) > 1 else inferred["values"][0]
+        evidence_note = "Reused data from a previous step (no new query run)."
+    else:
+        schema = get_schema_summary()
+        gather_prompt = (
+            f"You are gathering ONE current baseline number for a what-if scenario "
+            f"on Balaji Pharma data. Use run_sql_query to get it. Schema:\n\n{schema}\n\n"
+            f"{DATE_FORMAT_NOTE}{TURNOVER_FORMULA_NOTE}"
+            f"Once you have the number, respond in plain text with just the number "
+            f"and what it represents, e.g. 'Total revenue: 4500000'."
+        )
+        messages = [
+            {"role": "system", "content": gather_prompt},
+            {"role": "user", "content": f"{history_context}Question: {question}"},
+        ]
+        queries_run = []
+        gathered = None
+        for _ in range(MAX_SQL_LOOPS):
+            call_result = safe_groq_call(model=MODEL, messages=messages, tools=SQL_TOOL_SCHEMA, tool_choice="auto", temperature=0, max_tokens=500, reasoning_effort="low")
+            if not call_result["ok"]:
+                return {"explanation": "I ran into trouble gathering the baseline, please try again.", "found": False, "evidence": "; ".join(queries_run), "recommendation": "", "chart": None}
+            message = call_result["response"].choices[0].message
+            if not message.tool_calls:
+                gathered = message.content or ""
+                break
+            tool_call = message.tool_calls[0]
+            args = safe_parse_tool_args(tool_call)
+            sql = args.get("sql", "")
+            queries_run.append(sql)
+            result = run_sql_query(sql)
+            messages.append(message)
+            messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(result)})
+
+        if gathered is None:
+            return {"explanation": "I couldn't gather a baseline number for that scenario.", "found": False, "evidence": "; ".join(queries_run), "recommendation": "", "chart": None}
+
+        extract_prompt = f"From this text, extract just the numeric baseline value:\n\n{gathered}\n\nRespond ONLY with JSON: {{\"baseline\": <number>}}"
+        extract_call = safe_groq_call(model=MODEL, messages=[{"role": "user", "content": extract_prompt}], temperature=0, max_tokens=100, response_format={"type": "json_object"})
+        if not extract_call["ok"]:
+            return {"explanation": gathered, "found": True, "evidence": "; ".join(queries_run), "recommendation": "", "chart": None}
+        try:
+            baseline = float(json.loads(extract_call["response"].choices[0].message.content)["baseline"])
+        except (TypeError, json.JSONDecodeError, KeyError, ValueError):
+            return {"explanation": gathered, "found": True, "evidence": "; ".join(queries_run), "recommendation": "", "chart": None}
+        evidence_note = "; ".join(queries_run)
+
+    adjustment_prompt = (
+        f"Extract the hypothetical percentage change being asked about in this "
+        f"question. Respond ONLY with JSON: {{\"adjustment_pct\": <number, positive "
+        f"for increase, negative for decrease>}}.\n\nQuestion: {question}"
+    )
+    adj_call = safe_groq_call(model=MODEL, messages=[{"role": "user", "content": adjustment_prompt}], temperature=0, max_tokens=100, response_format={"type": "json_object"})
+    if not adj_call["ok"]:
+        return {"explanation": "I couldn't work out what change you're asking about.", "found": False, "evidence": evidence_note, "recommendation": "", "chart": None}
+    try:
+        adjustment_pct = float(json.loads(adj_call["response"].choices[0].message.content)["adjustment_pct"])
+    except (TypeError, json.JSONDecodeError, KeyError, ValueError):
+        return {"explanation": "I couldn't work out what change you're asking about.", "found": False, "evidence": evidence_note, "recommendation": "", "chart": None}
+
+    # THE ACTUAL SCENARIO MATH -- plain Python, no LLM involved.
+    projected = baseline * (1 + adjustment_pct / 100)
+    delta = projected - baseline
+
+    explanation = (
+        f"Current baseline: {baseline:,.0f}. A {adjustment_pct:+.1f}% change "
+        f"projects to {projected:,.0f}, a difference of {delta:+,.0f}."
+    )
+
+    return {
+        "explanation": explanation,
+        "found": True,
+        "evidence": evidence_note,
+        "recommendation": (
+            "This is a simple linear what-if, it doesn't account for knock-on "
+            "effects elsewhere in the business -- use it to size the ballpark "
+            "impact, not as a precise forecast."
+        ),
+        "chart": {
+            "style": "bar",
+            "title": "Scenario: Current vs Projected",
+            "x_axis_data": ["Current", "Projected"],
+            "series": [{"name": metric_hint or "Value", "values": [baseline, projected]}],
+        },
+    }
+
 # ============================================================
 # Planner: one Groq call, produces an ordered plan instead of a
 # single label. Closed agent vocabulary, capped step count.
@@ -765,7 +939,7 @@ def build_planner_prompt(state: GraphState) -> str:
         "using the previous Q/A above before planning.\n\n"
         "Break the question into a plan: an ordered list of steps. Each step "
         "uses exactly one agent from this closed set: \"sql\", \"rag\", "
-        "\"chart\", \"forecast\". Do not invent other agent names.\n\n"
+        "\"chart\", \"forecast\", \"scenario\". Do not invent other agent names.\n\n"
         "Each step is an object:\n"
         "{\n"
         '  "agent": "sql" | "rag" | "chart" | "forecast",\n'
@@ -787,6 +961,8 @@ def build_planner_prompt(state: GraphState) -> str:
         "\"uses\" pointing at the sql step's index.\n"
         "- If the question is entirely unrelated to Balaji Pharma, respond with "
         '{"off_topic": true} instead of a plan.\n\n'
+        "- \"what if\" hypothetical questions on a metric = sql then scenario, "
+        "second step sets \"uses\" pointing at the sql step's index.\n"
         "Respond ONLY with JSON, no markdown, no backticks:\n"
         '{"plan": [...]} or {"off_topic": true}\n\n'
         "Examples:\n"
@@ -795,6 +971,7 @@ def build_planner_prompt(state: GraphState) -> str:
         '"How is the company performing?" -> {"plan": [{"agent": "sql", "goal": "get overall revenue and margin"}, {"agent": "rag", "goal": "explain what drives performance"}]}\n'
         '"Forecast our revenue for the next 3 months" -> {"plan": [{"agent": "sql", "goal": "get monthly revenue, last 12-18 months, ordered oldest to newest"}, {"agent": "forecast", "uses": 0, "metric_hint": "revenue"}]}\n'
         '"Plot inventory turnover by category" -> {"plan": [{"agent": "sql", "goal": "get inventory turnover by category"}, {"agent": "chart", "uses": 0, "metric_hint": "inventory turnover"}]}\n'
+        '"What if we increase discount by 5%?" -> {"plan": [{"agent": "sql", "goal": "get current discount-related baseline"}, {"agent": "scenario", "uses": 0, "metric_hint": "discount"}]}\n'
         '"What is the weather today?" -> {"off_topic": true}\n\n'
         f"Question: {state['question']}"
     )
@@ -803,48 +980,36 @@ def build_planner_prompt(state: GraphState) -> str:
 def planner_node(state: GraphState) -> GraphState:
     prompt = build_planner_prompt(state)
 
-    call_result = safe_groq_call(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=500,
-        reasoning_effort="low",
-        response_format={"type": "json_object"},
+    parsed, err = safe_structured_call(
+        [{"role": "user", "content": prompt}],
+        PlannerOutput, temperature=0, max_tokens=500, reasoning_effort="low",
     )
 
-    if not call_result["ok"]:
+    if parsed is None:
         state["plan"] = [{"agent": "sql", "goal": state["question"]}]
         state["route_decision"] = "sql"
         state["step_results"] = {}
         state["current_step"] = 0
         return state
 
-    content = call_result["response"].choices[0].message.content
-    try:
-        parsed = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
-        parsed = {}
-
-    if parsed.get("off_topic"):
+    if parsed.off_topic:
         state["plan"] = []
         state["route_decision"] = "off-topic"
         state["step_results"] = {}
         state["current_step"] = 0
         return state
 
-    raw_plan = parsed.get("plan") or []
-    VALID_AGENTS = {"sql", "rag", "chart", "forecast"}
+    VALID_AGENTS = {"sql", "rag", "chart", "forecast", "scenario"}
 
     plan = []
-    for step in raw_plan[:MAX_PLAN_STEPS]:
-        agent = step.get("agent")
-        if agent not in VALID_AGENTS:
+    for step in parsed.plan[:MAX_PLAN_STEPS]:
+        if step.agent not in VALID_AGENTS:
             continue
-        clean_step = {"agent": agent, "goal": step.get("goal") or state["question"]}
-        if isinstance(step.get("uses"), int) and 0 <= step["uses"] < len(plan):
-            clean_step["uses"] = step["uses"]
-        if step.get("metric_hint"):
-            clean_step["metric_hint"] = step["metric_hint"]
+        clean_step = {"agent": step.agent, "goal": step.goal or state["question"]}
+        if step.uses is not None and 0 <= step.uses < len(plan):
+            clean_step["uses"] = step.uses
+        if step.metric_hint:
+            clean_step["metric_hint"] = step.metric_hint
         plan.append(clean_step)
 
     if not plan:
@@ -911,12 +1076,58 @@ def agent_executor_node(state: GraphState) -> GraphState:
         result = get_chart_agent_answer(
             goal, history_context, input_data=input_data, metric_hint=step.get("metric_hint")
         )
+    elif agent == "scenario":
+        result = get_scenario_agent_answer(
+        goal, history_context, input_data=input_data, metric_hint=step.get("metric_hint")
+        )
     else:
         result = {"explanation": "Unknown agent in plan.", "found": False, "evidence": "", "recommendation": ""}
 
     state["step_results"][step_index] = result
     state["current_step"] = step_index + 1
     return state
+
+def meta_node(state: GraphState) -> GraphState:
+    history = state.get("turn_history", [])
+
+    if not history:
+        state["explanation"] = "We haven't discussed anything yet in this conversation."
+        state["found"] = True
+        state["confidence"] = "N/A"
+        return state
+
+    history_text = "\n\n".join(
+        f"Q{i+1}: {turn['question']}\nA{i+1}: {turn['explanation']}"
+        for i, turn in enumerate(history)
+    )
+
+    prompt = (
+        f"Here is the conversation history so far:\n\n{history_text}\n\n"
+        f"Answer this question about the conversation itself: {state['question']}"
+    )
+
+    call_result = safe_groq_call(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=400,
+        reasoning_effort="low",
+    )
+
+    if not call_result["ok"]:
+        state["explanation"] = "I ran into trouble with that, please try again."
+        state["found"] = False
+        return state
+
+    state["explanation"] = call_result["response"].choices[0].message.content
+    state["found"] = True
+    state["confidence"] = "N/A"
+    return state
+
+def route_entry(state: GraphState) -> str:
+    if is_meta_question(state["question"]):
+        return "meta_node"
+    return "planner_node"
 
 
 def route_after_executor(state: GraphState) -> str:
@@ -940,6 +1151,7 @@ def assemble_node(state: GraphState) -> GraphState:
         "rag": "From business documentation",
         "forecast": "Forecast",
         "chart": "Chart summary",
+        "scenario": "Scenario analysis",
     }
 
     explanation_parts = []
@@ -996,6 +1208,27 @@ def assemble_node(state: GraphState) -> GraphState:
     state["chart"] = chart
     return state
 
+def validator_node(state: GraphState) -> GraphState:
+    if not state.get("found"):
+        return state
+
+    cautions = []
+
+    for result in state.get("step_results", {}).values():
+        r_squared = result.get("r_squared")
+        if r_squared is not None and r_squared < 0.3:
+            cautions.append(
+                "the forecast trend is weak/noisy (low R\u00b2) -- treat the "
+                "projected numbers as a rough estimate, not a firm prediction"
+            )
+
+    if not state.get("evidence"):
+        cautions.append("this answer has no supporting data citation")
+
+    if cautions:
+        state["confidence"] = "Low - " + "; ".join(cautions)
+
+    return state
 
 def off_topic_node(state: GraphState) -> GraphState:
     state["explanation"] = "I can only answer questions about Balaji Pharma's dashboard data or business definitions."
@@ -1018,13 +1251,23 @@ def route_after_planner(state: GraphState) -> str:
 
 graph = StateGraph(GraphState)
 
+graph.add_node("meta_node", meta_node)
 graph.add_node("planner_node", planner_node)
 graph.add_node("agent_executor_node", agent_executor_node)
 graph.add_node("assemble_node", assemble_node)
+graph.add_node("validator_node", validator_node)
 graph.add_node("off_topic_node", off_topic_node)
 graph.add_node("update_history_node", update_history_node)
 
-graph.add_edge(START, "planner_node")
+
+graph.add_conditional_edges(
+    START,
+    route_entry,
+    {
+        "planner_node": "planner_node",
+        "meta_node": "meta_node",
+    },
+)
 
 graph.add_conditional_edges(
     "planner_node",
@@ -1044,12 +1287,15 @@ graph.add_conditional_edges(
     },
 )
 
-graph.add_edge("assemble_node", "update_history_node")
+graph.add_edge("assemble_node", "validator_node")
+graph.add_edge("validator_node", "update_history_node")
 graph.add_edge("off_topic_node", "update_history_node")
+graph.add_edge("meta_node", "update_history_node")
 graph.add_edge("update_history_node", END)
 
 compiled_graph = graph.compile(checkpointer=MemorySaver())
 
+import time
 
 def run_agent(question: str, thread_id: str) -> dict:
     config = {"configurable": {"thread_id": thread_id}}
@@ -1073,22 +1319,29 @@ def run_agent(question: str, thread_id: str) -> dict:
             "recommendation": "",
         }
 
-    return compiled_graph.invoke({
-        "question": question,
-        "route_decision": "",
-        "explanation": "",
-        "found": False,
-        "sources": [],
-        "confidence": "",
-        "evidence": "",
-        "recommendation": "",
-        "turn_history": turn_history,
-        "chart": None,
-        "plan": [],
-        "step_results": {},
-        "current_step": 0,
+    start_time = time.time()
+    result = compiled_graph.invoke({
+    "question": question,
+    "route_decision": "",
+    "explanation": "",
+    "found": False,
+    "sources": [],
+    "confidence": "",
+    "evidence": "",
+    "recommendation": "",
+    "turn_history": turn_history,
+    "chart": None,
+    "plan": [],
+    "step_results": {},
+    "current_step": 0,
     }, config=config)
 
+    elapsed = time.time() - start_time
+    print(f"DEBUG: run_agent took {elapsed:.2f}s for route={result.get('route_decision')}")
+
+    return result
+
+   
 
 if __name__ == "__main__":
     result = run_agent("explain company structure?", thread_id="test-thread-1")
