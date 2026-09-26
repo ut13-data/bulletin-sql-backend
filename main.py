@@ -1,41 +1,32 @@
-from fastapi import FastAPI
+"""
+bUlleTin FastAPI backend.
+
+All dashboard numbers now come from agent/metrics.py, the same metric layer
+the Ask bUlleTin agent uses, so a KPI card and a chat answer can never disagree.
+
+JSON keys are unchanged, so existing frontend pages keep working. What changed
+in the NUMBERS (see CHANGES.md for details):
+  * Gross margin uses net revenue (after discounts) and actual production cost.
+    Category and quarterly margins now reconcile with the headline margin.
+  * Inventory turnover is annualised, so it agrees with DIO (turnover x DIO = 365).
+  * Inventory is valued at production cost, the same basis as COGS.
+  * Quarterly turnover is per year-quarter (2024-Q3), no longer mixing the
+    same quarter from different years.
+  * Revenue KPI cards all use the latest complete fiscal year.
+"""
+from collections import defaultdict
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import sqlite3
-import pandas as pd
-import os
-from fastapi import FastAPI, HTTPException
-from langchain_core.embeddings import Embeddings
-from langchain_text_splitters import MarkdownHeaderTextSplitter
-#from langchain_community.embeddings import HuggingFaceEmbeddings
-import requests
 
-from pydantic import BaseModel
+load_dotenv()
 
-
-
-class HFAPIEmbeddings(Embeddings):
-    def __init__(self, api_token):
-        self.api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-        self.headers = {"Authorization": f"Bearer {api_token}"}
-
-    def _embed(self, texts):
-        response = requests.post(
-            self.api_url,
-            headers=self.headers,
-            json={"inputs": texts, "options": {"wait_for_model": True}},
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def embed_documents(self, texts):
-        return self._embed(texts)
-
-    def embed_query(self, text):
-        return self._embed([text])[0]
-from langchain_community.vectorstores import FAISS
-from dotenv import load_dotenv
-from groq import Groq
+from agent import metrics as M                      # noqa: E402  (env must be loaded first)
+from agent.db import read_sql                        # noqa: E402
+from agent.config import MAX_TURNS                  # noqa: E402
+from agent.periods import resolve                   # noqa: E402
 
 app = FastAPI()
 
@@ -47,20 +38,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_connection():
-    return sqlite3.connect("bulletin.db")
+# Results are cached per process: bulletin.db only changes on redeploy.
+_cache: dict = {}
 
-# In-memory cache, keyed per dashboard. Lives as long as the Render
-# instance stays warm. Resets on cold start / redeploy, which is fine
-# since bulletin.db only changes on redeploy anyway.
-_cache = {}
 
-# ============================================================
-# RAG / ASK BULLETIN — Groq client setup
-# ============================================================
-load_dotenv()
-groq_key = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=groq_key)
+def cached(key):
+    def wrap(fn):
+        def inner():
+            if key not in _cache:
+                _cache[key] = fn()
+            return _cache[key]
+        return inner
+    return wrap
+
+
+def r2(x) -> float:
+    return round(float(x), 2)
+
+
+def lakh(x) -> str:
+    return f"₹{x / 1e5:.2f}L"
+
+
+def million(x) -> str:
+    return f"₹{x / 1e6:.2f}M"
+
 
 @app.get("/")
 def read_root():
@@ -70,603 +72,206 @@ def read_root():
 # ============================================================
 # REVENUE
 # ============================================================
-def _compute_revenue_data(conn):
-    total_rev = pd.read_sql("""
-        SELECT SUM(f.LineRevenue * (1 - f.DiscountPct)) AS revenue
-        FROM FactSalesLines f
-        JOIN DimDate d ON f.OrderDate = d.Date
-        WHERE d.FiscalYear = 'FY24'
-    """, conn)["revenue"][0]
 
-    discount_pct = pd.read_sql("""
-        SELECT SUM(LineRevenue * DiscountPct) * 100.0 / SUM(LineRevenue) AS pct
-        FROM FactSalesLines
-    """, conn)["pct"][0]
+@cached("revenue")
+def get_revenue_data():
+    fy = resolve({"type": "fiscal_year", "value": "latest_complete"})             # FY24 with current data
+    fy_prev = resolve({"type": "fiscal_year", "value": f"FY{(fy.start.year) % 100:02d}"})
+    all_data = resolve({"type": "all"})
 
-    avg_rev_per_customer = pd.read_sql("""
-        SELECT SUM(LineRevenue * (1 - DiscountPct)) * 1.0 / COUNT(DISTINCT CustomerID) AS avg_rev
-        FROM FactSalesLines
-    """, conn)["avg_rev"][0]
+    cards = M.compute(["net_revenue", "discount_pct", "revenue_per_customer"], fy).df.iloc[0]
+    prev_rev = M.value("net_revenue", fy_prev)
+    yoy_growth_pct = (cards.net_revenue - prev_rev) / prev_rev * 100
 
-    yoy = pd.read_sql("""
-        SELECT d.FiscalYear, SUM(f.LineRevenue * (1 - f.DiscountPct)) AS revenue
-        FROM FactSalesLines f
-        JOIN DimDate d ON f.OrderDate = d.Date
-        WHERE d.FiscalYear IN ('FY23', 'FY24')
-        GROUP BY d.FiscalYear
-    """, conn)
+    monthly = M.compute(["net_revenue", "discount_pct"], all_data, grain="month").df
+    by_month = monthly.set_index("period")["net_revenue"]
+    monthly_yoy = []
+    for month, rev in by_month.items():
+        prior = f"{int(month[:4]) - 1}{month[4:]}"
+        if prior in by_month.index:
+            monthly_yoy.append({"month": month, "yoyGrowthPct": r2((rev - by_month[prior]) / by_month[prior] * 100)})
 
-    fy23_rev = yoy[yoy["FiscalYear"] == "FY23"]["revenue"].values[0]
-    fy24_rev = yoy[yoy["FiscalYear"] == "FY24"]["revenue"].values[0]
-    yoy_growth_pct = (fy24_rev - fy23_rev) / fy23_rev * 100
-
-    monthly_trend = pd.read_sql("""
-        SELECT
-            strftime('%Y-%m', OrderDate) AS month,
-            SUM(LineRevenue * (1 - DiscountPct)) AS revenue,
-            SUM(LineRevenue * DiscountPct) * 100.0 / SUM(LineRevenue) AS discount_pct
-        FROM FactSalesLines
-        GROUP BY month
-        ORDER BY month
-    """, conn)
-
-    monthly_trend["year"] = monthly_trend["month"].str[:4].astype(int)
-    monthly_trend["month_num"] = monthly_trend["month"].str[5:7].astype(int)
-    monthly_trend_sorted = monthly_trend.sort_values(["year", "month_num"]).reset_index(drop=True)
-    monthly_trend_sorted["prior_year_revenue"] = monthly_trend_sorted.groupby("month_num")["revenue"].shift(1)
-    monthly_trend_sorted["yoy_growth_pct"] = (
-        (monthly_trend_sorted["revenue"] - monthly_trend_sorted["prior_year_revenue"])
-        / monthly_trend_sorted["prior_year_revenue"] * 100
-    )
-    monthly_yoy = monthly_trend_sorted.dropna(subset=["yoy_growth_pct"])
-
-    distributor_share = pd.read_sql("""
-        SELECT
-            DistributorID AS distributor_id,
-            SUM(LineRevenue * (1 - DiscountPct)) AS revenue
-        FROM FactSalesLines
-        GROUP BY DistributorID
-    """, conn)
-    distributor_total = distributor_share["revenue"].sum()
-    distributor_share["revenue_share_pct"] = distributor_share["revenue"] / distributor_total * 100
-
-    category_share = pd.read_sql("""
-        SELECT
-            p.Category AS category,
-            SUM(f.LineRevenue * (1 - f.DiscountPct)) AS revenue
-        FROM FactSalesLines f
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-        GROUP BY p.Category
-    """, conn)
-    category_total = category_share["revenue"].sum()
-    category_share["revenue_share_pct"] = category_share["revenue"] / category_total * 100
-    category_share = category_share.sort_values("revenue_share_pct", ascending=False)
-
-    product_revenue = pd.read_sql("""
-        SELECT
-            f.ProductID AS product_id,
-            p.ProductName AS product_name,
-            SUM(f.LineRevenue * (1 - f.DiscountPct)) AS total_revenue
-        FROM FactSalesLines f
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-        GROUP BY f.ProductID, p.ProductName
-        ORDER BY total_revenue DESC
-    """, conn)
+    dist = M.compute(["net_revenue"], all_data, dims=["distributor"]).df
+    dist_ids = read_sql("SELECT DistributorID, DistributorName FROM DimDistributor").set_index("DistributorName")["DistributorID"]
+    cat = M.compute(["net_revenue"], all_data, dims=["category"]).df.sort_values("net_revenue", ascending=False)
+    prod = M.compute(["net_revenue"], all_data, dims=["product"]).df.sort_values("net_revenue", ascending=False)
+    prod_ids = read_sql("SELECT ProductID, ProductName FROM DimProduct").set_index("ProductName")["ProductID"]
 
     return {
-        "totalRevenue": f"₹{total_rev / 1_000_000:.2f}M",
-        "discountPct": f"{discount_pct:.2f}%",
-        "avgRevenuePerCustomer": f"₹{avg_rev_per_customer / 1000:.2f}K",
+        "period": fy.short,
+        "totalRevenue": million(cards.net_revenue),
+        "discountPct": f"{cards.discount_pct:.2f}%",
+        "avgRevenuePerCustomer": f"₹{cards.revenue_per_customer / 1000:.2f}K",
         "yoyGrowth": f"{yoy_growth_pct:.2f}%",
-        "distributorShare": [
-            {"distributorId": row["distributor_id"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
-            for _, row in distributor_share.iterrows()
-        ],
-        "categoryShare": [
-            {"category": row["category"], "revenueSharePct": round(row["revenue_share_pct"], 2)}
-            for _, row in category_share.iterrows()
-        ],
-        "monthlyRevenueTrend": [
-            {"month": row["month"], "revenue": round(row["revenue"], 2), "discountPct": round(row["discount_pct"], 2)}
-            for _, row in monthly_trend_sorted.iterrows()
-        ],
-        "monthlyYoyGrowth": [
-            {"month": row["month"], "yoyGrowthPct": round(row["yoy_growth_pct"], 2)}
-            for _, row in monthly_yoy.iterrows()
-        ],
-        "productRevenue": [
-            {"productId": row["product_id"], "productName": row["product_name"], "totalRevenue": round(row["total_revenue"], 2)}
-            for _, row in product_revenue.iterrows()
-        ],
+        "distributorShare": [{"distributorId": dist_ids.get(r.distributor, r.distributor),
+                              "revenueSharePct": r2(r.net_revenue / dist.net_revenue.sum() * 100)}
+                             for r in dist.itertuples()],
+        "categoryShare": [{"category": r.category, "revenueSharePct": r2(r.net_revenue / cat.net_revenue.sum() * 100)}
+                          for r in cat.itertuples()],
+        "monthlyRevenueTrend": [{"month": r.period, "revenue": r2(r.net_revenue), "discountPct": r2(r.discount_pct)}
+                                for r in monthly.itertuples()],
+        "monthlyYoyGrowth": monthly_yoy,
+        "productRevenue": [{"productId": prod_ids.get(r.product, r.product), "productName": r.product,
+                            "totalRevenue": r2(r.net_revenue)} for r in prod.itertuples()],
     }
-
-
-def get_revenue_data(conn):
-    if "revenue" not in _cache:
-        _cache["revenue"] = _compute_revenue_data(conn)
-    return _cache["revenue"]
 
 
 # ============================================================
 # GROSS MARGIN
 # ============================================================
-def _compute_gross_margin_data(conn):
-    margin_overall = pd.read_sql("""
-        SELECT SUM(GrossProfit) AS total_gross_profit,
-               SUM(Revenue) AS total_revenue
-        FROM FactFinanceMonthly
-    """, conn)
-    total_gross_profit = margin_overall["total_gross_profit"][0]
-    margin_total_revenue = margin_overall["total_revenue"][0]
-    gross_margin_pct = (total_gross_profit / margin_total_revenue) * 100
 
-    category_breakdown = pd.read_sql("""
-        SELECT
-            p.Category AS category,
-            SUM(f.LineRevenue * (1 - f.DiscountPct)) AS total_revenue,
-            SUM(f.Quantity * p.UnitCost) AS total_cogs
-        FROM FactSalesLines f
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-        GROUP BY p.Category
-    """, conn)
-    category_breakdown["gross_profit"] = category_breakdown["total_revenue"] - category_breakdown["total_cogs"]
-    category_breakdown["gross_margin_pct"] = (
-        category_breakdown["gross_profit"] / category_breakdown["total_revenue"] * 100
-    )
-
-    quarterly_trend_raw = pd.read_sql("""
-        SELECT MonthYear, GrossProfit, Revenue
-        FROM FactFinanceMonthly
-    """, conn)
-    quarterly_trend_raw["year"] = quarterly_trend_raw["MonthYear"].str[:4].astype(int)
-    quarterly_trend_raw["month_num"] = quarterly_trend_raw["MonthYear"].str[5:7].astype(int)
-    quarterly_trend_raw["quarter"] = ((quarterly_trend_raw["month_num"] - 1) // 3) + 1
-    quarterly_grouped = quarterly_trend_raw.groupby(["year", "quarter"]).agg(
-        gross_profit=("GrossProfit", "sum"),
-        revenue=("Revenue", "sum"),
-    ).reset_index()
-    quarterly_grouped["gross_margin_pct"] = (quarterly_grouped["gross_profit"] / quarterly_grouped["revenue"]) * 100
-
-    # Revenue vs COGS by fiscal quarter: same COGS calc as the category
-    # breakdown (Quantity * UnitCost), joined to DimDate for FiscalYear.
-    # Fiscal quarter is derived from the calendar month (fiscal year
-    # starts April), NOT taken from DimDate.Quarter directly.
-    rev_cogs_raw = pd.read_sql("""
-        SELECT
-            d.FiscalYear AS fiscal_year,
-            d.Month AS month_num,
-            f.LineRevenue * (1 - f.DiscountPct) AS revenue,
-            f.Quantity * p.UnitCost AS cogs
-        FROM FactSalesLines f
-        JOIN DimDate d ON f.OrderDate = d.Date
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-    """, conn)
-    rev_cogs_raw["fiscal_quarter"] = ((rev_cogs_raw["month_num"] - 4) % 12) // 3 + 1
-    revenue_cogs_by_fiscal_quarter = rev_cogs_raw.groupby(["fiscal_year", "fiscal_quarter"]).agg(
-        total_revenue=("revenue", "sum"),
-        total_cogs=("cogs", "sum"),
-    ).reset_index().sort_values(["fiscal_year", "fiscal_quarter"])
+@cached("grossMargin")
+def get_gross_margin_data():
+    all_data = resolve({"type": "all"})
+    keys = ["net_revenue", "cogs", "gross_profit", "gross_margin_pct"]
+    total = M.compute(keys, all_data).df.iloc[0]
+    cat = M.compute(keys, all_data, dims=["category"]).df
+    qtr = M.compute(keys, all_data, grain="quarter").df
+    fq = M.compute(keys, all_data, grain="fiscal_quarter").df
 
     return {
-        "grossMarginPct": f"{gross_margin_pct:.2f}%",
-        "grossProfit": f"₹{total_gross_profit / 1_000_000:.2f}M",
-        "categoryBreakdown": [
-            {
-                "category": row["category"],
-                "grossProfit": round(row["gross_profit"], 2),
-                "totalRevenue": round(row["total_revenue"], 2),
-                "grossMarginPct": round(row["gross_margin_pct"], 2),
-                "totalCogs": round(row["total_cogs"], 2),
-            }
-            for _, row in category_breakdown.iterrows()
-        ],
-        "quarterlyTrend": [
-            {
-                "year": int(row["year"]),
-                "quarter": f"Qtr {int(row['quarter'])}",
-                "grossProfit": round(row["gross_profit"], 2),
-                "grossMarginPct": round(row["gross_margin_pct"], 2),
-                "benchmarkHigh": 35.0,
-                "benchmarkLow": 15.0,
-            }
-            for _, row in quarterly_grouped.iterrows()
-        ],
-        "revenueCogsByFiscalQuarter": [
-            {
-                "fiscalYear": row["fiscal_year"],
-                "quarter": int(row["fiscal_quarter"]),
-                "totalRevenue": round(row["total_revenue"], 2),
-                "totalCogs": round(row["total_cogs"], 2),
-            }
-            for _, row in revenue_cogs_by_fiscal_quarter.iterrows()
-        ],
+        "grossMarginPct": f"{total.gross_margin_pct:.2f}%",
+        "grossProfit": million(total.gross_profit),
+        "categoryBreakdown": [{"category": r.category, "grossProfit": r2(r.gross_profit), "totalRevenue": r2(r.net_revenue),
+                               "grossMarginPct": r2(r.gross_margin_pct), "totalCogs": r2(r.cogs)} for r in cat.itertuples()],
+        "quarterlyTrend": [{"year": int(r.period[:4]), "quarter": f"Qtr {r.period[-1]}", "grossProfit": r2(r.gross_profit),
+                            "grossMarginPct": r2(r.gross_margin_pct), "benchmarkHigh": 35.0, "benchmarkLow": 15.0}
+                           for r in qtr.itertuples()],
+        "revenueCogsByFiscalQuarter": [{"fiscalYear": r.period[:4], "quarter": int(r.period[-1]),
+                                        "totalRevenue": r2(r.net_revenue), "totalCogs": r2(r.cogs)} for r in fq.itertuples()],
     }
-
-
-def get_gross_margin_data(conn):
-    if "grossMargin" not in _cache:
-        _cache["grossMargin"] = _compute_gross_margin_data(conn)
-    return _cache["grossMargin"]
 
 
 # ============================================================
 # INVENTORY TURNOVER
 # ============================================================
-def _compute_inventory_turnover_data(conn):
-    inv_raw = pd.read_sql("""
-        SELECT
-            f.ProductID AS product_id,
-            f.ClosingStock AS closing_stock,
-            f.Sold AS sold
-        FROM FactInventoryWeekly f
-    """, conn)
-    product_info = pd.read_sql("""
-        SELECT ProductID AS product_id, ProductName AS product_name,
-               Category AS category, UnitCost AS unit_cost,
-               ShelfLifeMonths AS shelf_life_months
-        FROM DimProduct
-    """, conn)
 
-    inv_per_product = inv_raw.groupby("product_id").agg(
-        avg_closing_stock=("closing_stock", "mean"),
-        total_sold=("sold", "sum"),
-    ).reset_index()
-    inv_per_product = inv_per_product.merge(product_info, on="product_id")
-    inv_per_product["avg_inventory_value"] = inv_per_product["avg_closing_stock"] * inv_per_product["unit_cost"]
-    inv_per_product["cogs"] = inv_per_product["total_sold"] * inv_per_product["unit_cost"]
-    inv_per_product["turnover"] = inv_per_product["cogs"] / inv_per_product["avg_inventory_value"]
+@cached("inventoryTurnover")
+def get_inventory_turnover_data():
+    all_data = resolve({"type": "all"})
+    keys = ["inventory_turnover", "avg_inventory_value"]
+    total = M.compute(keys, all_data).df.iloc[0]
+    prod = M.compute(keys, all_data, dims=["product"]).df
+    info = read_sql("SELECT ProductID, ProductName, Category, ShelfLifeMonths FROM DimProduct")
+    prod = prod.merge(info, left_on="product", right_on="ProductName")
+    cat = M.compute(keys, all_data, dims=["category"]).df
+    qtr = M.compute(["inventory_turnover"], all_data, grain="quarter").df
 
-    total_cogs_inv = inv_per_product["cogs"].sum()
-    total_avg_inventory_value = inv_per_product["avg_inventory_value"].sum()
-    overall_turnover = total_cogs_inv / total_avg_inventory_value
+    def mover(r):
+        return {"productId": r.ProductID, "category": r.Category, "productName": r.ProductName,
+                "inventoryTurnover": r2(r.inventory_turnover)}
 
-    category_turnover = inv_per_product.groupby("category").agg(
-        cogs=("cogs", "sum"),
-        avg_inventory_value=("avg_inventory_value", "sum"),
-    ).reset_index()
-    category_turnover["turnover"] = category_turnover["cogs"] / category_turnover["avg_inventory_value"]
-
-    fast_movers = inv_per_product.sort_values("turnover", ascending=False).head(5)
-    overstock_risks = inv_per_product.sort_values("turnover", ascending=True).head(5)
-
-    # Quarterly turnover: ratio of SUMMED aggregates per quarter, never a
-    # sum/mean of individual product ratios.
-    inv_weekly_raw = pd.read_sql("""
-        SELECT
-            f.ProductID AS product_id,
-            f.WeekEnd AS week_end,
-            f.ClosingStock AS closing_stock,
-            f.Sold AS sold,
-            p.UnitCost AS unit_cost
-        FROM FactInventoryWeekly f
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-    """, conn)
-    inv_weekly_raw["month_num"] = pd.to_datetime(inv_weekly_raw["week_end"]).dt.month
-    inv_weekly_raw["quarter"] = ((inv_weekly_raw["month_num"] - 1) // 3) + 1
-
-    quarterly_per_product = inv_weekly_raw.groupby(["quarter", "product_id"]).agg(
-        avg_closing_stock=("closing_stock", "mean"),
-        total_sold=("sold", "sum"),
-        unit_cost=("unit_cost", "first"),
-    ).reset_index()
-    quarterly_per_product["avg_inventory_value"] = quarterly_per_product["avg_closing_stock"] * quarterly_per_product["unit_cost"]
-    quarterly_per_product["cogs"] = quarterly_per_product["total_sold"] * quarterly_per_product["unit_cost"]
-
-    quarterly_turnover = quarterly_per_product.groupby("quarter").agg(
-        cogs=("cogs", "sum"),
-        avg_inventory_value=("avg_inventory_value", "sum"),
-    ).reset_index()
-    quarterly_turnover["turnover"] = quarterly_turnover["cogs"] / quarterly_turnover["avg_inventory_value"]
-
+    ranked = prod.sort_values("inventory_turnover", ascending=False)
     return {
-        "inventoryTurnover": f"{overall_turnover:.2f}",
-        "averageInventoryValue": f"₹{total_avg_inventory_value / 100000:.2f}L",
-        "productTurnover": [
-            {"productId": row["product_id"], "inventoryTurnover": round(row["turnover"], 2)}
-            for _, row in inv_per_product.iterrows()
-        ],
-        "categoryTurnover": [
-            {"category": row["category"], "inventoryTurnover": round(row["turnover"], 2), "avgInventoryValue": round(row["avg_inventory_value"], 2)}
-            for _, row in category_turnover.iterrows()
-        ],
-        "fastMovers": [
-            {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
-            for _, row in fast_movers.iterrows()
-        ],
-        "overstockRisks": [
-            {"productId": row["product_id"], "category": row["category"], "productName": row["product_name"], "inventoryTurnover": round(row["turnover"], 2)}
-            for _, row in overstock_risks.iterrows()
-        ],
-        "shelfLifeVsTurnover": [
-            {
-                "productId": row["product_id"],
-                "productName": row["product_name"],
-                "shelfLifeMonths": int(row["shelf_life_months"]),
-                "inventoryTurnover": round(row["turnover"], 2),
-                "warehouseValue": round(row["avg_inventory_value"], 2),
-            }
-            for _, row in inv_per_product.iterrows()
-        ],
-        "quarterlyTurnover": [
-            {
-                "quarter": int(row["quarter"]),
-                "inventoryTurnover": round(row["turnover"], 2),
-            }
-            for _, row in quarterly_turnover.iterrows()
-        ],
+        "inventoryTurnover": f"{total.inventory_turnover:.2f}",
+        "averageInventoryValue": lakh(total.avg_inventory_value),
+        "productTurnover": [{"productId": r.ProductID, "inventoryTurnover": r2(r.inventory_turnover)} for r in prod.itertuples()],
+        "categoryTurnover": [{"category": r.category, "inventoryTurnover": r2(r.inventory_turnover),
+                              "avgInventoryValue": r2(r.avg_inventory_value)} for r in cat.itertuples()],
+        "fastMovers": [mover(r) for r in ranked.head(5).itertuples()],
+        "overstockRisks": [mover(r) for r in ranked.tail(5).iloc[::-1].itertuples()],
+        "shelfLifeVsTurnover": [{"productId": r.ProductID, "productName": r.ProductName,
+                                 "shelfLifeMonths": int(r.ShelfLifeMonths), "inventoryTurnover": r2(r.inventory_turnover),
+                                 "warehouseValue": r2(r.avg_inventory_value)} for r in prod.itertuples()],
+        # Per year-quarter now (the old version merged e.g. Q1 of 2022, 2023 and 2024).
+        "quarterlyTurnover": [{"quarter": r.period, "inventoryTurnover": r2(r.inventory_turnover)} for r in qtr.itertuples()],
     }
-
-
-def get_inventory_turnover_data(conn):
-    if "inventoryTurnover" not in _cache:
-        _cache["inventoryTurnover"] = _compute_inventory_turnover_data(conn)
-    return _cache["inventoryTurnover"]
 
 
 # ============================================================
 # DAYS INVENTORY OUTSTANDING (DIO)
 # ============================================================
-def _compute_dio_data(conn):
-    # DIO = 365 / annualized turnover. Turnover reuses the Inventory
-    # Turnover block's math exactly: COGS = Sold * UnitCost, Average
-    # Inventory Value = mean(ClosingStock) * UnitCost. Computed over the
-    # full weekly window then annualized by dividing by the window length
-    # in years BEFORE inverting to days. Overall/category figures are
-    # ratios of SUMMED aggregates, never a mean of per-product ratios.
-    dio_raw = pd.read_sql("""
-        SELECT
-            f.ProductID AS product_id,
-            f.WeekEnd AS week_end,
-            f.ClosingStock AS closing_stock,
-            f.Sold AS sold,
-            p.ProductName AS product_name,
-            p.Category AS category,
-            p.UnitCost AS unit_cost
-        FROM FactInventoryWeekly f
-        JOIN DimProduct p ON f.ProductID = p.ProductID
-    """, conn)
-    dio_raw["week_end"] = pd.to_datetime(dio_raw["week_end"])
-    dio_period_years = (dio_raw["week_end"].max() - dio_raw["week_end"].min()).days / 365.0
 
-    dio_per_product = dio_raw.groupby(["product_id", "product_name", "category"]).agg(
-        avg_closing_stock=("closing_stock", "mean"),
-        total_sold=("sold", "sum"),
-        unit_cost=("unit_cost", "first"),
-    ).reset_index()
-    dio_per_product["avg_inventory_value"] = dio_per_product["avg_closing_stock"] * dio_per_product["unit_cost"]
-    dio_per_product["cogs"] = dio_per_product["total_sold"] * dio_per_product["unit_cost"]
-    dio_per_product["annualized_turnover"] = (
-        dio_per_product["cogs"] / dio_per_product["avg_inventory_value"] / dio_period_years
-    )
-    dio_per_product["dio_days"] = 365.0 / dio_per_product["annualized_turnover"]
-
-    total_cogs_dio = dio_per_product["cogs"].sum()
-    total_avg_inventory_value_dio = dio_per_product["avg_inventory_value"].sum()
-    overall_annualized_turnover = total_cogs_dio / total_avg_inventory_value_dio / dio_period_years
-    overall_dio = 365.0 / overall_annualized_turnover
-
-    category_dio = dio_per_product.groupby("category").agg(
-        cogs=("cogs", "sum"),
-        avg_inventory_value=("avg_inventory_value", "sum"),
-    ).reset_index()
-    category_dio["annualized_turnover"] = category_dio["cogs"] / category_dio["avg_inventory_value"] / dio_period_years
-    category_dio["dio_days"] = 365.0 / category_dio["annualized_turnover"]
-
-    slowest_movers_dio = dio_per_product.sort_values("dio_days", ascending=False).head(5)
-
+@cached("dio")
+def get_dio_data():
+    all_data = resolve({"type": "all"})
+    keys = ["dio_days", "inventory_turnover"]
+    total = M.compute(keys, all_data).df.iloc[0]
+    cat = M.compute(keys, all_data, dims=["category"]).df
+    prod = M.compute(keys, all_data, dims=["product"]).df
+    info = read_sql("SELECT ProductID, ProductName, Category FROM DimProduct")
+    slow = prod.merge(info, left_on="product", right_on="ProductName").sort_values("dio_days", ascending=False).head(5)
     return {
-        "daysInventoryOutstanding": f"{overall_dio:.1f} days",
-        "annualizedInventoryTurnover": f"{overall_annualized_turnover:.2f}",
-        "categoryDio": [
-            {
-                "category": row["category"],
-                "dioDays": round(row["dio_days"], 2),
-                "annualizedTurnover": round(row["annualized_turnover"], 2),
-            }
-            for _, row in category_dio.iterrows()
-        ],
-        "slowestMovers": [
-            {
-                "productId": row["product_id"],
-                "category": row["category"],
-                "productName": row["product_name"],
-                "dioDays": round(row["dio_days"], 2),
-            }
-            for _, row in slowest_movers_dio.iterrows()
-        ],
+        "daysInventoryOutstanding": f"{total.dio_days:.1f} days",
+        "annualizedInventoryTurnover": f"{total.inventory_turnover:.2f}",
+        "categoryDio": [{"category": r.category, "dioDays": r2(r.dio_days), "annualizedTurnover": r2(r.inventory_turnover)}
+                        for r in cat.itertuples()],
+        "slowestMovers": [{"productId": r.ProductID, "category": r.Category, "productName": r.ProductName,
+                           "dioDays": r2(r.dio_days)} for r in slow.itertuples()],
     }
 
 
-def get_dio_data(conn):
-    if "dio" not in _cache:
-        _cache["dio"] = _compute_dio_data(conn)
-    return _cache["dio"]
+# ============================================================
+# ENDPOINTS: one per dashboard, plus /all-data for Overview
+# ============================================================
+
+@app.get("/revenue")
+def revenue_endpoint():
+    return {"revenue": get_revenue_data()}
+
+
+@app.get("/gross-margin")
+def gross_margin_endpoint():
+    return {"grossMargin": get_gross_margin_data()}
+
+
+@app.get("/inventory-turnover")
+def inventory_turnover_endpoint():
+    return {"inventoryTurnover": get_inventory_turnover_data()}
+
+
+@app.get("/dio")
+def dio_endpoint():
+    return {"dio": get_dio_data()}
+
+
+@app.get("/all-data")
+def get_all_data():
+    return {"revenue": get_revenue_data(), "grossMargin": get_gross_margin_data(),
+            "inventoryTurnover": get_inventory_turnover_data(), "dio": get_dio_data()}
 
 
 # ============================================================
-# RAG / ASK BULLETIN — vectorstore build + retrieval + generation
+# RAG + AGENT
 # ============================================================
-def _compute_vectorstore():
-    with open('docs/Balaji_Pharma_Database_Architecture.md', 'r', encoding='utf-8') as f1, \
-         open('docs/Balaji_Pharma_Business_Definition.md', 'r', encoding='utf-8') as f2:
-        t1 = f1.read()
-        t2 = f2.read()
-
-    # Different header depth per doc: architecture doc's real table
-    # boundaries sit at ### (one per table), business doc's real section
-    # boundaries sit at ## only.
-    headers_architecture = [("##", "section"), ("###", "subsection")]
-    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_architecture)
-    chunk1 = splitter.split_text(t1)
-
-    headers_business = [("##", "section")]
-    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_business)
-    chunk2 = splitter.split_text(t2)
-
-    # STAGE 5: keep each chunk's metadata (section/subsection) so we can
-    # cite where an answer came from. Previously this was dropped --
-    # FAISS.from_texts() only stored the plain text.
-    content = list()
-    metadatas = list()
-
-    for chunk in chunk1:
-        content.append(chunk.page_content)
-        metadatas.append({**chunk.metadata, "source": "Database Architecture"})
-
-    for chunk in chunk2:
-        content.append(chunk.page_content)
-        metadatas.append({**chunk.metadata, "source": "Business Definition"})
-
-    model = HFAPIEmbeddings(api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"))
-    vectorstore = FAISS.from_texts(content, model, metadatas=metadatas)
-    return vectorstore
-
-
-def get_vectorstore():
-    if "vectorstore" not in _cache:
-        _cache["vectorstore"] = _compute_vectorstore()
-    return _cache["vectorstore"]
-
 
 class RagQueryRequest(BaseModel):
     question: str
 
 
-# STAGE 5: a chunk is only used if its DISTANCE score clears this bar.
-# FAISS's similarity_search_with_score returns a DISTANCE, not a
-# similarity percentage -- LOWER means MORE similar (0 = identical
-# meaning). This is the opposite direction from cosine similarity.
-# Starting value, tune after testing against real known-good/known-bad
-# question pairs (e.g. "flow of the company" vs "DistributionCluster").
-SIMILARITY_DISTANCE_THRESHOLD = 1.3
-
-
 @app.post("/rag-query")
 def rag_query_endpoint(request: RagQueryRequest):
-    vectorstore = get_vectorstore()
+    from agent.rag import answer_from_docs
+    out = answer_from_docs(request.question)
+    return {"answer": out["explanation"], "found": out["found"], "sources": out["sources"]}
 
-    # Returns (Document, distance) pairs. Ask for more than we need
-    # (k=5) so filtering by threshold still leaves a real choice.
-    results_with_scores = vectorstore.similarity_search_with_score(request.question, k=5)
-
-    # TEMPORARY DEBUG — remove once threshold is calibrated
-    print("DEBUG scores:", [(round(score, 3), doc.metadata.get("section", "")) for doc, score in results_with_scores])
-
-    # Only keep chunks that clear the similarity bar. This runs BEFORE
-    # calling Groq at all -- if nothing clears it, skip Groq entirely
-    # and answer "not found" directly, instead of hoping Groq notices
-    # the retrieved chunks are irrelevant.
-    relevant = [
-        (doc, score) for doc, score in results_with_scores
-        if score <= SIMILARITY_DISTANCE_THRESHOLD
-    ]
-
-    if not relevant:
-        return {
-            "answer": "I don't know.",
-            "found": False,
-            "sources": [],
-        }
-
-    relevant = relevant[:3]  # cap at top 3 of the ones that passed
-
-    context_blocks = [doc.page_content for doc, _ in relevant]
-    context_text = "\n\n".join(context_blocks)
-
-    prompt = f"Context: \n\n{context_text}\n\nUsing only the context above, answer the question. If the answer isn't in the context, say you don't know.\n\nQuestion: {request.question}"
-
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    answer_text = response.choices[0].message.content
-
-    # Real citations, built from the metadata we now preserve.
-    sources = []
-    for doc, score in relevant:
-        sources.append({
-            "document": doc.metadata.get("source", "Unknown"),
-            "section": doc.metadata.get("section", ""),
-            "subsection": doc.metadata.get("subsection", ""),
-        })
-
-    # A real boolean instead of phrase-matching "I don't know" text in
-    # Next.js. Still checks the LLM's own literal refusal phrase as a
-    # backstop, in case the model decides none of the (threshold-passed)
-    # chunks actually answer the question.
-    found = answer_text.strip().lower() not in ("i don't know.", "i don't know")
-
-    return {
-        "answer": answer_text,
-        "found": found,
-        "sources": sources,
-    }
-
-
-# ============================================================
-# ENDPOINTS — one per dashboard, plus /all-data for Overview
-# ============================================================
-@app.get("/revenue")
-def revenue_endpoint():
-    conn = get_connection()
-    data = {"revenue": get_revenue_data(conn)}
-    conn.close()
-    return data
-
-@app.get("/gross-margin")
-def gross_margin_endpoint():
-    conn = get_connection()
-    data = {"grossMargin": get_gross_margin_data(conn)}
-    conn.close()
-    return data
-
-@app.get("/inventory-turnover")
-def inventory_turnover_endpoint():
-    conn = get_connection()
-    data = {"inventoryTurnover": get_inventory_turnover_data(conn)}
-    conn.close()
-    return data
-
-@app.get("/dio")
-def dio_endpoint():
-    conn = get_connection()
-    data = {"dio": get_dio_data(conn)}
-    conn.close()
-    return data
-
-@app.get("/all-data")
-def get_all_data():
-    conn = get_connection()
-    data = {
-        "revenue": get_revenue_data(conn),
-        "grossMargin": get_gross_margin_data(conn),
-        "inventoryTurnover": get_inventory_turnover_data(conn),
-        "dio": get_dio_data(conn),
-    }
-    conn.close()
-    return data
-
-import agent_graph
 
 class AgentQueryRequest(BaseModel):
     question: str
     thread_id: str
 
 
+# The agent is stateless; this backend keeps each thread's turns in memory
+# (like the old MemorySaver). The Streamlit app stores history in Supabase instead.
+_threads: dict[str, list] = defaultdict(list)
+
 
 @app.post("/agent-query")
 def agent_query_endpoint(request: AgentQueryRequest):
+    from agent.graph import run_agent
     try:
-        return agent_graph.run_agent(request.question, request.thread_id)
+        history = _threads[request.thread_id]
+        result = run_agent(request.question, history)
+        if result["route_decision"] != "limit-reached":
+            history.append({"question": request.question, "explanation": result["explanation"],
+                            "query": result.get("query")})
+            del history[:-MAX_TURNS]
+        return result
     except Exception as e:
         print(f"Agent-query error: {e}")
         raise HTTPException(status_code=500, detail="Something went wrong processing that question.")
 
+
 @app.get("/debug-thread/{thread_id}")
 def debug_thread(thread_id: str):
-    config = {"configurable": {"thread_id": thread_id}}
-    state = agent_graph.compiled_graph.get_state(config)
-    return state.values
+    return {"turn_history": _threads.get(thread_id, [])}
