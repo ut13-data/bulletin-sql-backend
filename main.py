@@ -10,8 +10,8 @@ in the NUMBERS (see CHANGES.md for details):
     Category and quarterly margins now reconcile with the headline margin.
   * Inventory turnover is annualised, so it agrees with DIO (turnover x DIO = 365).
   * Inventory is valued at production cost, the same basis as COGS.
-  * Quarterly turnover is per year-quarter (2024-Q3), no longer mixing the
-    same quarter from different years.
+  * Quarterly turnover has one point per year-quarter (new "year" and "label"
+    fields), no longer mixing the same quarter from different years.
   * Revenue KPI cards all use the latest complete fiscal year.
 """
 from collections import defaultdict
@@ -173,8 +173,10 @@ def get_inventory_turnover_data():
         "shelfLifeVsTurnover": [{"productId": r.ProductID, "productName": r.ProductName,
                                  "shelfLifeMonths": int(r.ShelfLifeMonths), "inventoryTurnover": r2(r.inventory_turnover),
                                  "warehouseValue": r2(r.avg_inventory_value)} for r in prod.itertuples()],
-        # Per year-quarter now (the old version merged e.g. Q1 of 2022, 2023 and 2024).
-        "quarterlyTurnover": [{"quarter": r.period, "inventoryTurnover": r2(r.inventory_turnover)} for r in qtr.itertuples()],
+        # One point per year-quarter now (the old version merged Q1 of 2022, 2023 and 2024 into one point).
+        # "quarter" stays a number so the React type and chart still work; "year" and "label" are new.
+        "quarterlyTurnover": [{"quarter": int(r.period[-1]), "year": int(r.period[:4]), "label": r.period,
+                               "inventoryTurnover": r2(r.inventory_turnover)} for r in qtr.itertuples()],
     }
 
 
@@ -256,6 +258,33 @@ class AgentQueryRequest(BaseModel):
 _threads: dict[str, list] = defaultdict(list)
 
 
+BAND_SERIES = ("Likely low", "Likely high")
+
+
+def for_react(result: dict, question: str, history: list) -> dict:
+    """
+    Same answer as Streamlit, in the shape the React Ask UI renders:
+      * evidence = one short line; the formulas, SQL and numbers table are sent as
+        their own fields (definitions, sql, table, notes) and shown under Details
+      * forecast range lines removed from the chart (the range is in the text and table),
+        so the chart keeps its two lines: Actual and Forecast
+      * question and turn_history kept, as the old endpoint returned them
+    """
+    out = dict(result)
+    if result.get("definitions"):
+        metrics_used = ", ".join(d.split(":")[0] for d in result["definitions"])
+        out["evidence"] = f"Calculated in code from verified metric definitions: {metrics_used}. Formulas and SQL under Details."
+    elif result.get("route_decision") == "adhoc" and result.get("sql"):
+        out["evidence"] = "AI-written SQL, not from the verified metric catalog. Check it under Details."
+    if out.get("chart"):
+        chart = dict(out["chart"])
+        chart["series"] = [s for s in chart.get("series", []) if s.get("name") not in BAND_SERIES]
+        out["chart"] = chart
+    out["question"] = question
+    out["turn_history"] = [{"question": h["question"], "explanation": h["explanation"]} for h in history]
+    return out
+
+
 @app.post("/agent-query")
 def agent_query_endpoint(request: AgentQueryRequest):
     from agent.graph import run_agent
@@ -266,7 +295,7 @@ def agent_query_endpoint(request: AgentQueryRequest):
             history.append({"question": request.question, "explanation": result["explanation"],
                             "query": result.get("query")})
             del history[:-MAX_TURNS]
-        return result
+        return for_react(result, request.question, history)
     except Exception as e:
         print(f"Agent-query error: {e}")
         raise HTTPException(status_code=500, detail="Something went wrong processing that question.")
