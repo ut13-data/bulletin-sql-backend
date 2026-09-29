@@ -17,6 +17,7 @@ Rules this file enforces:
   * All filter values are passed as SQL parameters, never pasted into SQL.
 """
 import difflib
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -47,22 +48,23 @@ COST = "COALESCE(pc.unit_cost, p.UnitCost)"
 @dataclass(frozen=True)
 class Source:
     name: str
-    from_sql: str
+    from_base: str                # the fact table (+ joins every query needs)
+    joins: dict[str, str]         # alias -> JOIN clause, added only when a column or filter uses that alias
     date_col: str
     base: dict[str, str]          # raw column -> SQL aggregate
     dims: dict[str, str]          # dimension key -> SQL expression
-    needs_cost_cte: bool = False
 
 
 SOURCES: dict[str, Source] = {
     "sales": Source(
         name="sales",
-        from_sql="""FROM FactSalesLines f
-            JOIN DimProduct p ON p.ProductID = f.ProductID
-            LEFT JOIN product_cost pc ON pc.ProductID = f.ProductID
-            LEFT JOIN DimCustomer c ON c.CustomerID = f.CustomerID
-            LEFT JOIN DimDistributor d ON d.DistributorID = f.DistributorID
-            LEFT JOIN DimEmployee e ON e.EmployeeID = f.RepEmployeeID""",
+        from_base="FROM FactSalesLines f\nJOIN DimProduct p ON p.ProductID = f.ProductID",
+        joins={
+            "pc": "LEFT JOIN product_cost pc ON pc.ProductID = f.ProductID",
+            "c": "LEFT JOIN DimCustomer c ON c.CustomerID = f.CustomerID",
+            "d": "LEFT JOIN DimDistributor d ON d.DistributorID = f.DistributorID",
+            "e": "LEFT JOIN DimEmployee e ON e.EmployeeID = f.RepEmployeeID",
+        },
         date_col="f.OrderDate",
         base={
             "gross_sales": "SUM(f.LineRevenue)",
@@ -82,13 +84,11 @@ SOURCES: dict[str, Source] = {
             "outlet_type": "c.OutletType",
             "sales_rep": "e.EmployeeName",
         },
-        needs_cost_cte=True,
     ),
     "inventory": Source(
         name="inventory",
-        from_sql="""FROM FactInventoryWeekly i
-            JOIN DimProduct p ON p.ProductID = i.ProductID
-            LEFT JOIN product_cost pc ON pc.ProductID = i.ProductID""",
+        from_base="FROM FactInventoryWeekly i\nJOIN DimProduct p ON p.ProductID = i.ProductID",
+        joins={"pc": "LEFT JOIN product_cost pc ON pc.ProductID = i.ProductID"},
         date_col="i.WeekEnd",
         base={
             "inv_cogs": f"SUM(i.Sold * {COST})",
@@ -96,12 +96,11 @@ SOURCES: dict[str, Source] = {
             "inv_units_sold": "SUM(i.Sold)",
         },
         dims={"category": "p.Category", "product": "p.ProductName"},
-        needs_cost_cte=True,
     ),
     "production": Source(
         name="production",
-        from_sql="""FROM FactProductionBatches b
-            JOIN DimProduct p ON p.ProductID = b.ProductID""",
+        from_base="FROM FactProductionBatches b\nJOIN DimProduct p ON p.ProductID = b.ProductID",
+        joins={},
         date_col="b.ProductionWeekEnd",
         base={
             "units_produced": "SUM(b.QuantityProduced)",
@@ -114,8 +113,8 @@ SOURCES: dict[str, Source] = {
     ),
     "procurement": Source(
         name="procurement",
-        from_sql="""FROM FactPurchaseOrderLines po
-            LEFT JOIN DimRawMaterial m ON m.MaterialID = po.MaterialID""",
+        from_base="FROM FactPurchaseOrderLines po",
+        joins={"m": "LEFT JOIN DimRawMaterial m ON m.MaterialID = po.MaterialID"},
         date_col="po.OrderDate",
         base={
             "procurement_spend": "SUM(po.TotalCost)",
@@ -129,6 +128,14 @@ SOURCES: dict[str, Source] = {
         dims={"supplier": "po.SupplierName", "material": "m.MaterialName", "material_category": "m.MaterialCategory"},
     ),
 }
+
+
+def _from_clause(src: Source, *sql_parts: str) -> tuple[str, bool]:
+    """FROM + only the joins whose alias is used in the given SQL pieces. Returns (sql, needs product_cost CTE)."""
+    used = set(re.findall(r"(?<![\w.])(\w+)\.", " ".join(sql_parts)))
+    joins = [clause for alias, clause in src.joins.items() if alias in used]
+    return "\n".join([src.from_base, *joins]), "pc" in used and "pc" in src.joins
+
 
 DIMENSION_LABELS = {
     "category": "Category", "product": "Product", "distributor": "Distributor", "customer": "Customer",
@@ -267,6 +274,30 @@ CATALOG: dict[str, Metric] = {m.key: m for m in [
 ]}
 
 
+# Raw columns each derived metric needs (anything not listed needs just its own column).
+# Only these columns are selected, so the SQL shown under Details is exactly what produced the answer.
+NEEDS = {
+    "discount_pct": ("discount_amount", "gross_sales"),
+    "gross_profit": ("net_revenue", "cogs"),
+    "gross_margin_pct": ("net_revenue", "cogs"),
+    "avg_order_value": ("net_revenue", "orders"),
+    "revenue_per_customer": ("net_revenue", "active_customers"),
+    "inventory_turnover": ("inv_cogs", "inv_value_sum"),
+    "dio_days": ("inv_cogs", "inv_value_sum"),
+    "avg_inventory_value": ("inv_value_sum",),
+    "reject_rate_pct": ("rejected_units", "units_produced"),
+    "unit_production_cost": ("production_cost", "good_units"),
+    "on_time_delivery_pct": ("on_time_lines", "po_lines"),
+    "late_deliveries": ("late_lines",),
+    "avg_days_late": ("late_days_sum", "late_lines"),
+    "avg_lead_time_days": ("lead_days_sum", "po_lines"),
+}
+
+
+def needs(key: str) -> tuple[str, ...]:
+    return NEEDS.get(key, (key,))
+
+
 def metric(key: str) -> Metric:
     if key not in CATALOG:
         raise MetricError(f"Unknown metric '{key}'.")
@@ -297,7 +328,8 @@ def dimension_values(dim: str) -> list[str]:
     for src in SOURCES.values():
         if dim in src.dims:
             expr = src.dims[dim]
-            sql = f"WITH {PRODUCT_COST_CTE} SELECT DISTINCT {expr} AS v {src.from_sql} WHERE {expr} IS NOT NULL ORDER BY v"
+            from_sql, _ = _from_clause(src, expr)
+            sql = f"SELECT DISTINCT {expr} AS v\n{from_sql}\nWHERE {expr} IS NOT NULL ORDER BY v"
             return read_sql(sql)["v"].astype(str).tolist()
     raise MetricError(f"Unknown dimension '{dim}'.")
 
@@ -354,7 +386,7 @@ class ComputeResult:
 
 
 def _source_query(src: Source, period: ResolvedPeriod, dims: list[str], grain: str | None,
-                  filters: dict[str, list[str]]) -> tuple[str, dict, list[str]]:
+                  filters: dict[str, list[str]], columns: list[str]) -> tuple[str, dict, list[str]]:
     select, group_cols = [], []
     if grain:
         select.append(f"{time_expr(src.date_col, grain)} AS period")
@@ -362,7 +394,7 @@ def _source_query(src: Source, period: ResolvedPeriod, dims: list[str], grain: s
     for d in dims:
         select.append(f"{src.dims[d]} AS {d}")
         group_cols.append(d)
-    select += [f"{expr} AS {name}" for name, expr in src.base.items()]
+    select += [f"{src.base[name]} AS {name}" for name in columns]
 
     where = [f"{src.date_col} >= :start", f"{src.date_col} < :end"]
     params = {"start": period.start_str, "end": period.end_str}
@@ -371,10 +403,24 @@ def _source_query(src: Source, period: ResolvedPeriod, dims: list[str], grain: s
         where.append(f"{src.dims[dim]} IN ({', '.join(':' + n for n in names)})")
         params.update(dict(zip(names, values)))
 
-    cte = f"WITH {PRODUCT_COST_CTE}\n" if src.needs_cost_cte else ""
-    sql = (f"{cte}SELECT {', '.join(select)}\n{src.from_sql}\nWHERE {' AND '.join(where)}"
+    from_sql, needs_cte = _from_clause(src, *select, *where)
+    cte = f"WITH {PRODUCT_COST_CTE}\n" if needs_cte else ""
+    columns_sql = ",\n       ".join(select)          # one column per line, easier to read in Details
+    sql = (f"{cte}SELECT {columns_sql}\n{from_sql}\nWHERE {' AND '.join(where)}"
            + (f"\nGROUP BY {', '.join(group_cols)}" if group_cols else ""))
     return sql, params, group_cols
+
+
+def readable_sql(sql: str, params: dict) -> str:
+    """
+    The executed SQL with its parameter values written in (e.g. :start -> '2023-04-01'), for the
+    Details section only. The query itself always runs with parameters, which is what blocks SQL injection.
+    """
+    out = sql
+    for name in sorted(params, key=len, reverse=True):
+        value = str(params[name]).replace("'", "''")
+        out = re.sub(rf":{name}\b", f"'{value}'", out)
+    return out
 
 
 def _inventory_weeks(period: ResolvedPeriod, grain: str | None) -> tuple[pd.DataFrame | int, str]:
@@ -385,8 +431,9 @@ def _inventory_weeks(period: ResolvedPeriod, grain: str | None) -> tuple[pd.Data
                f"FROM FactInventoryWeekly i WHERE {col} >= :start AND {col} < :end GROUP BY period")
     else:
         sql = f"SELECT COUNT(DISTINCT {col}) AS weeks FROM FactInventoryWeekly i WHERE {col} >= :start AND {col} < :end"
-    df = read_sql(sql, {"start": period.start_str, "end": period.end_str})
-    return (df if grain else int(df["weeks"].iloc[0])), sql
+    params = {"start": period.start_str, "end": period.end_str}
+    df = read_sql(sql, params)
+    return (df if grain else int(df["weeks"].iloc[0])), readable_sql(sql, params)
 
 
 def compute(metric_keys: list[str], period: ResolvedPeriod, dims: list[str] | None = None,
@@ -408,10 +455,13 @@ def compute(metric_keys: list[str], period: ResolvedPeriod, dims: list[str] | No
     frames, sqls, group_cols = [], [], []
     for source_name in dict.fromkeys(metric(k).source for k in metric_keys):
         src = SOURCES[source_name]
+        # Only the raw columns this question needs, in the source's standard order.
+        wanted = {c for k in metric_keys if metric(k).source == source_name for c in needs(k)}
+        columns = [c for c in src.base if c in wanted]
         src_filters = {d: v for d, v in filters.items() if d in src.dims}
-        sql, params, group_cols = _source_query(src, period, dims, grain, src_filters)
+        sql, params, group_cols = _source_query(src, period, dims, grain, src_filters, columns)
         df = read_sql(sql, params)
-        sqls.append(sql)
+        sqls.append(readable_sql(sql, params))
 
         if source_name == "inventory":
             weeks, weeks_sql = _inventory_weeks(period, grain)
@@ -420,7 +470,8 @@ def compute(metric_keys: list[str], period: ResolvedPeriod, dims: list[str] | No
                 df = df.merge(weeks, on="period", how="left")
             else:
                 df["weeks"] = weeks
-            df["avg_inventory_value"] = _div(df["inv_value_sum"], df["weeks"])
+            if "inv_value_sum" in df:
+                df["avg_inventory_value"] = _div(df["inv_value_sum"], df["weeks"])
         frames.append(df)
 
     out = frames[0]
