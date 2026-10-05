@@ -7,10 +7,11 @@ Ask bUlleTin: the agent graph.
        |
     route by intent
        |-- metric        -> code computes everything from the metric catalog   (High confidence)
+       |-- brief         -> a fixed business summary, also computed in code
        |-- definition    -> catalog formula, or the business documents (RAG)
        |-- adhoc         -> LLM-written SQL, clearly labelled                    (Low confidence)
        |-- conversation  -> summary of this chat
-       |-- clarify / off_topic
+       |-- clarify / off_topic / unsupported
        |
     finalize_node      one recommendation sentence (numbers blocked in code) + response
 
@@ -27,12 +28,14 @@ from agent import llm
 from agent.adhoc import answer_adhoc
 from agent.config import MAX_TURNS
 from agent.metrics import CATALOG, MetricError, SOURCES, dimension_values
-from agent.operations import Answer, run as run_operation
+from agent.operations import BRIEF_METRICS, Answer, run as run_operation, run_brief
 from agent.parser import ParsedQuestion, parse
 from agent.periods import PeriodError, data_window_text
 from agent.rag import answer_from_docs
 
 LIMIT_MESSAGE = f"This chat has reached its {MAX_TURNS}-question limit. Start a new chat to continue."
+UNSUPPORTED_MESSAGE = ("Sorry, I can't do that yet. I can answer questions about Balaji Pharma's data, such as "
+                       "sales, margins, inventory, production, suppliers and forecasts.")
 
 
 class State(TypedDict, total=False):
@@ -69,7 +72,7 @@ def route(state: State) -> str:
         return "adhoc_node"     # couldn't structure it: fall back to the labelled ad-hoc path
     return {"metric": "metric_node", "definition": "definition_node", "adhoc": "adhoc_node",
             "conversation": "conversation_node", "clarify": "clarify_node",
-            "off_topic": "off_topic_node"}[parsed.intent]
+            "off_topic": "off_topic_node", "unsupported": "unsupported_node", "brief": "brief_node"}[parsed.intent]
 
 
 def metric_node(state: State) -> State:
@@ -87,6 +90,23 @@ def metric_node(state: State) -> State:
         evidence=evidence, chart=ans.chart, table=ans.table, notes=ans.notes, definitions=ans.definitions,
         sql=ans.sql, query=q.model_dump(), facts=ans.facts,
         plan=[{"agent": "metric", "goal": f"{q.operation}: {', '.join(q.metrics)}"}],
+    )
+    return state
+
+
+def brief_node(state: State) -> State:
+    parsed: ParsedQuestion = state["parsed"]
+    try:
+        ans: Answer = run_brief(parsed.period)
+    except (MetricError, PeriodError) as e:
+        state["result"] = _base("brief", str(e), False, "N/A")
+        return state
+    labels = ", ".join(CATALOG[k].label for k in BRIEF_METRICS)
+    state["result"] = _base(
+        "brief", ans.explanation, ans.found, ans.confidence,
+        evidence=f"Calculated in code from verified metric definitions: {labels}. Formulas and SQL under Details.",
+        table=ans.table, notes=ans.notes, definitions=ans.definitions, sql=ans.sql, facts=ans.facts,
+        plan=[{"agent": "brief", "goal": "fixed business summary"}],
     )
     return state
 
@@ -165,6 +185,12 @@ def off_topic_node(state: State) -> State:
     return state
 
 
+def unsupported_node(state: State) -> State:
+    """Requests for actions the app can't perform (PDF export, email, editing data): a polite, honest no."""
+    state["result"] = _base("unsupported", UNSUPPORTED_MESSAGE, False, "N/A")
+    return state
+
+
 def _allowed_phrases(result: dict) -> list[str]:
     """Names that legitimately contain digits (products, periods), allowed in a recommendation."""
     phrases = dimension_values("product") + re.findall(r"FY\d{2}(?:-Q[1-4])?|\d{4}-Q[1-4]|Q[1-4]",
@@ -174,7 +200,7 @@ def _allowed_phrases(result: dict) -> list[str]:
 
 def finalize_node(state: State) -> State:
     result = state["result"]
-    if result["found"] and result["route_decision"] in ("metric", "adhoc"):
+    if result["found"] and result["route_decision"] in ("metric", "adhoc", "brief"):
         result["recommendation"] = llm.recommend(state["question"], result["explanation"],
                                                  result.get("facts", {}), _allowed_phrases(result))
     result.pop("facts", None)
@@ -189,14 +215,17 @@ def finalize_node(state: State) -> State:
 graph = StateGraph(State)
 for name, fn in [("parse_node", parse_node), ("metric_node", metric_node), ("definition_node", definition_node),
                  ("adhoc_node", adhoc_node), ("conversation_node", conversation_node),
-                 ("clarify_node", clarify_node), ("off_topic_node", off_topic_node),
+                 ("clarify_node", clarify_node), ("off_topic_node", off_topic_node), ("unsupported_node", unsupported_node),
+                 ("brief_node", brief_node),
                  ("finalize_node", finalize_node)]:
     graph.add_node(name, fn)
 
 graph.add_edge(START, "parse_node")
 graph.add_conditional_edges("parse_node", route, {n: n for n in [
-    "metric_node", "definition_node", "adhoc_node", "conversation_node", "clarify_node", "off_topic_node"]})
-for n in ["metric_node", "definition_node", "adhoc_node", "conversation_node", "clarify_node", "off_topic_node"]:
+    "metric_node", "definition_node", "adhoc_node", "conversation_node", "clarify_node", "off_topic_node",
+    "unsupported_node", "brief_node"]})
+for n in ["metric_node", "definition_node", "adhoc_node", "conversation_node", "clarify_node", "off_topic_node",
+          "unsupported_node", "brief_node"]:
     graph.add_edge(n, "finalize_node")
 graph.add_edge("finalize_node", END)
 

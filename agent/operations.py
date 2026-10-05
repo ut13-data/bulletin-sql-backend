@@ -598,6 +598,86 @@ def op_scenario(q: MetricQuery) -> Answer:
 
 
 # ============================================================
+# brief: a fixed one-page business summary
+# ============================================================
+
+# Each section lists catalog metrics; the brief is always the same shape, so it can be trusted and compared.
+BRIEF_SECTIONS = [
+    ("Sales", ["net_revenue", "orders", "active_customers", "discount_pct"]),
+    ("Profitability", ["gross_margin_pct", "gross_profit"]),
+    ("Inventory", ["inventory_turnover", "dio_days", "avg_inventory_value"]),
+    ("Supply", ["on_time_delivery_pct", "reject_rate_pct"]),
+]
+BRIEF_METRICS = [k for _, keys in BRIEF_SECTIONS for k in keys]
+
+
+def run_brief(period: PeriodSpec | dict | None = None) -> Answer:
+    """
+    A business brief: the headline metrics for one period, each compared with the previous comparable
+    period, plus watch-outs found by fixed rules. Everything is calculated in code from the catalog.
+    """
+    p = resolve(period or {"type": "fiscal_year", "value": "latest_complete"})
+    res = M.compute(BRIEF_METRICS, p)
+    row = res.df.iloc[0]
+    sql = list(res.sql)
+
+    pair = _previous_comparable(p)
+    prev = None
+    if pair:
+        prev_res = M.compute(BRIEF_METRICS, pair[1])
+        prev = prev_res.df.iloc[0]
+        sql += prev_res.sql
+
+    lines = [f"**Business brief, {p.label}**" + (f", compared with {pair[1].label}." if pair else ".")]
+    table, facts = [], {}
+    for section, keys in BRIEF_SECTIONS:
+        lines.append(f"\n**{section}**")
+        for k in keys:
+            v = row.get(k, float("nan"))
+            if _isnan(v):
+                continue
+            text = f"- {M.metric(k).label}: **{fmt(k, v)}**"
+            entry = {"Section": section, "Metric": M.metric(k).label, "Value": fmt(k, v, exact=True)}
+            facts[k] = {"value": fmt(k, v)}
+            if prev is not None and not _isnan(prev.get(k)):
+                change = fmt_change(k, prev[k], v).replace("-0.0 pts", "0.0 pts").replace("+0.0 pts", "0.0 pts")
+                text += f" ({change})"
+                entry.update({"Previous": fmt(k, prev[k], exact=True), "Change": change})
+                facts[k]["change"] = change
+            lines.append(text)
+            table.append(entry)
+
+    # Watch-outs: fixed rules, so they are the same every time for the same data.
+    watch = []
+    cats = M.compute(["net_revenue", "gross_margin_pct"], p, dims=["category"])
+    sql += cats.sql
+    cdf = cats.df.dropna(subset=["net_revenue"])
+    for _, r in cdf[cdf.gross_margin_pct < 0].sort_values("gross_margin_pct").iterrows():
+        watch.append(f"- {r.category} sells below production cost ({fmt('gross_margin_pct', r.gross_margin_pct)} gross margin).")
+    if len(cdf) and cdf.net_revenue.sum() > 0:
+        top = cdf.sort_values("net_revenue", ascending=False).iloc[0]
+        watch.append(f"- Largest category: {top.category}, {top.net_revenue / cdf.net_revenue.sum() * 100:.1f}% of net revenue.")
+    sup = M.compute(["on_time_delivery_pct"], p, dims=["supplier"])
+    sql += sup.sql
+    sdf = sup.df.dropna(subset=["on_time_delivery_pct"])
+    if len(sdf):
+        worst = sdf.sort_values("on_time_delivery_pct").iloc[0]
+        if worst.on_time_delivery_pct < 100:
+            watch.append(f"- Least reliable supplier: {worst.supplier} "
+                         f"({fmt('on_time_delivery_pct', worst.on_time_delivery_pct)} delivered on time).")
+    if watch:
+        lines.append("\n**Watch**")
+        lines += watch
+    facts["watch"] = [w[2:] for w in watch]
+
+    notes = [p.coverage_note] if p.is_partial else []
+    if pair and p.is_partial:
+        notes.append("Because the period is partial, changes compare with the same months one year earlier.")
+    return Answer(explanation="\n".join(lines), confidence=_confidence([p]), table=table, notes=notes,
+                  definitions=_definitions(BRIEF_METRICS), sql=sql, facts=facts, found=bool(table))
+
+
+# ============================================================
 # Dispatcher
 # ============================================================
 

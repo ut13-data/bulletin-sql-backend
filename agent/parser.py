@@ -10,15 +10,15 @@ import json
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from agent import llm
 from agent.config import HISTORY_TURNS_FOR_LLM
 from agent.metrics import CATALOG, DIMENSION_LABELS, catalog_text, dimension_values
 from agent.operations import MetricQuery
-from agent.periods import available_periods_text
+from agent.periods import PeriodSpec, available_periods_text
 
-Intent = Literal["metric", "definition", "conversation", "adhoc", "clarify", "off_topic"]
+Intent = Literal["metric", "definition", "conversation", "adhoc", "clarify", "off_topic", "unsupported", "brief"]
 
 
 class ParsedQuestion(BaseModel):
@@ -27,6 +27,15 @@ class ParsedQuestion(BaseModel):
     query: MetricQuery | None = None
     definition_metric: str | None = None
     clarifying_question: str | None = None
+    period: PeriodSpec | None = None          # only for intent "brief"
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _one_period(cls, v):
+        # The model sometimes wraps the period in a list; a brief covers one period.
+        if isinstance(v, list):
+            return v[0] if v else None
+        return v
 
 
 # Safety net for common wordings, applied after the LLM (the LLM is asked to use catalog keys).
@@ -65,7 +74,7 @@ Category words: tablets/vati -> Vati, oils/tel -> Tel, syrups -> Syrup, capsules
 
 ## Output: JSON only
 {{
-  "intent": "metric" | "definition" | "conversation" | "adhoc" | "clarify" | "off_topic",
+  "intent": "metric" | "definition" | "conversation" | "adhoc" | "clarify" | "off_topic" | "unsupported" | "brief",
   "standalone_question": "the question rewritten to be self-contained, using the conversation for 'it', 'that', 'same for...'",
   "query": {{                      // only when intent = "metric"
     "operation": "value" | "compare" | "trend" | "breakdown" | "forecast" | "scenario",
@@ -80,7 +89,8 @@ Category words: tablets/vati -> Vati, oils/tel -> Tel, syrups -> Syrup, capsules
     "scenario": null | {{"driver": "price" | "volume" | "unit_cost" | "discount", "change": number, "change_unit": "pct" | "pts"}}
   }},
   "definition_metric": null | "metric_key",  // intent "definition" about one catalog metric
-  "clarifying_question": null | "..."        // only for intent "clarify"
+  "clarifying_question": null | "...",       // only for intent "clarify"
+  "period": null | PeriodSpec               // only for intent "brief": the period the user named, else null
 }}
 
 PeriodSpec formats:
@@ -108,7 +118,9 @@ PeriodSpec formats:
 - Questions about the company, its structure, processes, supply chain, tables or columns -> intent "definition" with definition_metric null.
 - A data question no catalog metric can answer (e.g. about promotions, specific orders, BOM, raw material stock) -> intent "adhoc".
 - Questions about this conversation itself ("summarise our chat", "what did I ask") -> intent "conversation".
+- A request for a brief, report, summary or overview of the business or its performance ("give me a brief", "can you give me a report", "how is the business doing overall") -> intent "brief", with "period" set only if the user named one. Summarising this chat is "conversation", not "brief".
 - Use "clarify" only if no sensible default exists. Unrelated to Balaji Pharma -> "off_topic".
+- Requests to DO something the app cannot do (make or export a PDF, Excel, Word file or report, email or send a message, set a reminder, change or delete data, place an order) -> intent "unsupported", even when they mention Balaji Pharma or an earlier answer.
 - Follow-ups: reuse the previous query and change only what the user changed (e.g. "and FY23?" -> same operation and metrics, new period).
 
 ## Examples
@@ -128,6 +140,12 @@ Q: How is DIO calculated?
 {{"intent":"definition","standalone_question":"How is days inventory outstanding calculated?","query":null,"definition_metric":"dio_days"}}
 Q: Which promotions gave the biggest discount?
 {{"intent":"adhoc","standalone_question":"Which promotions gave the biggest discount?","query":null}}
+Q: Can you give me a brief?
+{{"intent":"brief","standalone_question":"Business brief for the latest complete fiscal year","query":null,"period":null}}
+Q: Give me a report for 2024
+{{"intent":"brief","standalone_question":"Business brief for calendar year 2024","query":null,"period":{{"type":"calendar_year","value":2024}}}}
+Q: Can you give the above report as a PDF?
+{{"intent":"unsupported","standalone_question":"Export the earlier answers as a PDF","query":null}}
 """
 
 

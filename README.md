@@ -8,8 +8,8 @@ A chat-only version of the assistant is built in Streamlit (see "Related").
 
 | Part | Repo | Hosted on |
 |---|---|---|
-| Front end (Next.js, React, Tailwind, Recharts) | `bulletin-balaji-pharma` | Vercel: https://bulletin-balaji-pharma.vercel.app/ |
-| Back end (FastAPI, SQLite, pandas, LangGraph) | `bulletin-sql-backend` ||
+| Front end (Next.js, React, Tailwind, Recharts) | `bulletin-balaji-pharma` | Vercel: _add link_ |
+| Back end (FastAPI, SQLite, pandas, LangGraph) | `bulletin-sql-backend` | Render: _add link_ |
 
 ---
 
@@ -27,7 +27,7 @@ A chat-only version of the assistant is built in Streamlit (see "Related").
 Each dashboard also has status colours (Healthy / Watch / Attention / Critical), plain-language insights,
 and an **Ask bUlleTin** tab. An overview page combines them into a health score and risk radar.
 
-**Ask bUlleTin** answers questions like "Forecast revenue for the next 3 months", "Which category has the
+**Ask bUlleTin** answers questions like "Forecast revenue for the next 3 months", "Give me a brief", "Which category has the
 lowest margin?" or "What if raw material costs rise 10%?", with the numbers, a chart, a recommendation, a
 confidence level, and a Details section showing the formulas, the numbers table and the exact SQL that ran.
 
@@ -155,7 +155,7 @@ On Vercel, set `NEXT_PUBLIC_API_URL` to the Render URL.
 
 ## Testing
 
-The shared `agent/` package is tested in the Streamlit repo (`python -m pytest -q tests`, 50 tests):
+The shared `agent/` package is tested in the Streamlit repo (`python -m pytest -q tests`, 52 tests):
 every metric recalculated independently in pandas, COGS and gross sales reconciled to the finance table
 month by month, the SQL shown in Details re-run to confirm it gives the same number, and fake-AI tests for
 messy output, unknown metrics, periods with no data and recommendations containing numbers.
