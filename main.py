@@ -26,7 +26,8 @@ load_dotenv()
 from agent import metrics as M                      # noqa: E402  (env must be loaded first)
 from agent.db import read_sql                        # noqa: E402
 from agent.config import MAX_TURNS                  # noqa: E402
-from agent.periods import resolve                   # noqa: E402
+from agent.periods import data_window_text, resolve  # noqa: E402
+from agent.formatting import inr                    # noqa: E402
 
 app = FastAPI()
 
@@ -56,12 +57,9 @@ def r2(x) -> float:
     return round(float(x), 2)
 
 
-def lakh(x) -> str:
-    return f"₹{x / 1e5:.2f}L"
-
-
-def million(x) -> str:
-    return f"₹{x / 1e6:.2f}M"
+def money(x) -> str:
+    """Indian format, same as the chat: ₹2.07 Cr, ₹8.48 L, ₹45,300."""
+    return inr(x)
 
 
 @app.get("/")
@@ -99,9 +97,9 @@ def get_revenue_data():
 
     return {
         "period": fy.short,
-        "totalRevenue": million(cards.net_revenue),
+        "totalRevenue": money(cards.net_revenue),
         "discountPct": f"{cards.discount_pct:.2f}%",
-        "avgRevenuePerCustomer": f"₹{cards.revenue_per_customer / 1000:.2f}K",
+        "avgRevenuePerCustomer": money(cards.revenue_per_customer),
         "yoyGrowth": f"{yoy_growth_pct:.2f}%",
         "distributorShare": [{"distributorId": dist_ids.get(r.distributor, r.distributor),
                               "revenueSharePct": r2(r.net_revenue / dist.net_revenue.sum() * 100)}
@@ -131,7 +129,7 @@ def get_gross_margin_data():
 
     return {
         "grossMarginPct": f"{total.gross_margin_pct:.2f}%",
-        "grossProfit": million(total.gross_profit),
+        "grossProfit": money(total.gross_profit),
         "categoryBreakdown": [{"category": r.category, "grossProfit": r2(r.gross_profit), "totalRevenue": r2(r.net_revenue),
                                "grossMarginPct": r2(r.gross_margin_pct), "totalCogs": r2(r.cogs)} for r in cat.itertuples()],
         "quarterlyTrend": [{"year": int(r.period[:4]), "quarter": f"Qtr {r.period[-1]}", "grossProfit": r2(r.gross_profit),
@@ -164,7 +162,7 @@ def get_inventory_turnover_data():
     ranked = prod.sort_values("inventory_turnover", ascending=False)
     return {
         "inventoryTurnover": f"{total.inventory_turnover:.2f}",
-        "averageInventoryValue": lakh(total.avg_inventory_value),
+        "averageInventoryValue": money(total.avg_inventory_value),
         "productTurnover": [{"productId": r.ProductID, "inventoryTurnover": r2(r.inventory_turnover)} for r in prod.itertuples()],
         "categoryTurnover": [{"category": r.category, "inventoryTurnover": r2(r.inventory_turnover),
                               "avgInventoryValue": r2(r.avg_inventory_value)} for r in cat.itertuples()],
@@ -231,6 +229,78 @@ def dio_endpoint():
 def get_all_data():
     return {"revenue": get_revenue_data(), "grossMargin": get_gross_margin_data(),
             "inventoryTurnover": get_inventory_turnover_data(), "dio": get_dio_data()}
+
+
+# ============================================================
+# MANAGEMENT BRIEF
+# ============================================================
+
+# For these metrics a fall is good news (less discounting, fewer days of stock, fewer rejects).
+DOWN_IS_GOOD = {"discount_pct", "dio_days", "reject_rate_pct"}
+# Inventory value grows with sales, so a rise is neither good nor bad on its own: shown without colour.
+NEUTRAL = {"avg_inventory_value"}
+_brief: dict = {}
+
+
+def _trend(key: str, change: str | None) -> str:
+    """'good' / 'bad' / 'flat' for a change like '+17.2%' or '-1.8 pts', from the business's point of view."""
+    if not change or key in NEUTRAL or change.lstrip("+-").startswith("0.0"):
+        return "flat"
+    up = change.startswith("+")
+    return "good" if up != (key in DOWN_IS_GOOD) else "bad"
+
+
+def _watch_severity(text: str) -> str:
+    if "below production cost" in text:
+        return "critical"
+    if text.startswith("Least reliable supplier"):
+        return "watch"
+    return "info"
+
+
+def _brief_numbers() -> dict:
+    """The brief's numbers: calculated once per process from the metric catalog (the same code as the chat)."""
+    from agent.operations import BRIEF_SECTIONS, _previous_comparable, run_brief
+    period = resolve({"type": "fiscal_year", "value": "latest_complete"})
+    pair = _previous_comparable(period)
+    ans = run_brief(None)
+    sections = [{"title": title, "items": [
+        {"key": k, "label": M.metric(k).label, "value": ans.facts[k]["value"],
+         "change": ans.facts[k].get("change"), "trend": _trend(k, ans.facts[k].get("change"))}
+        for k in keys if k in ans.facts]} for title, keys in BRIEF_SECTIONS]
+    return {
+        "period": period.label, "periodShort": period.short, "comparedWith": pair[1].short if pair else None,
+        "sections": sections,
+        "watch": [{"text": w, "severity": _watch_severity(w)} for w in ans.facts.get("watch", [])],
+        "confidence": ans.confidence, "notes": ans.notes, "definitions": ans.definitions, "sql": ans.sql,
+        "dataThrough": data_window_text(),
+        "_explanation": ans.explanation, "_facts": ans.facts,
+    }
+
+
+@app.get("/brief")
+def brief_endpoint(refresh: bool = False):
+    """
+    Management brief for the Overview page. Every number comes from code; the AI writes only the
+    one-sentence recommendation, and llm.recommend() rejects it if it contains a number.
+    refresh=true asks for a new recommendation; the numbers only change when the data does.
+    """
+    from agent import llm
+    from agent.graph import _allowed_phrases
+    if "numbers" not in _brief:
+        _brief["numbers"] = _brief_numbers()
+    nums = _brief["numbers"]
+    if refresh or "recommendation" not in _brief:
+        try:
+            _brief["recommendation"] = llm.recommend(
+                "Give me a management brief", nums["_explanation"], nums["_facts"],
+                _allowed_phrases({"explanation": nums["_explanation"]}))
+        except Exception as e:                    # advice is optional; the numbers still show
+            print(f"Brief recommendation error: {e}")
+            _brief["recommendation"] = ""
+    out = {k: v for k, v in nums.items() if not k.startswith("_")}
+    out["recommendation"] = _brief["recommendation"]
+    return out
 
 
 # ============================================================
